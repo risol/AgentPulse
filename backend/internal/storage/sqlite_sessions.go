@@ -5,10 +5,13 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"strings"
+	"time"
+
 	"github.com/agentpulse/agentpulse/backend/internal/correlation"
 	"github.com/agentpulse/agentpulse/backend/internal/telemetry"
 	"sort"
-	"time"
 )
 
 func (s *SQLite) ListSessions(ctx context.Context, limit int, beforeActivityNS *int64, beforeID string, sinceNS *int64, model string) ([]telemetry.SessionSummary, error) {
@@ -432,13 +435,12 @@ func (s *SQLite) LoadAnalyticsTrends(ctx context.Context, sinceNS, untilNS, buck
 		return nil, errors.New("invalid analytics trend window")
 	}
 	buckets := make(map[int64]telemetry.AnalyticsTrendBucket)
-	rows, err := s.db.QueryContext(ctx, `
-SELECT (event_time_ns / ?)*? AS bucket_start_ns,
+	rows, err := s.db.QueryContext(ctx, analyticsTrendLogsCTE()+`
+SELECT (activity_time_ns / ?)*? AS bucket_start_ns,
        SUM(input_tokens),COUNT(input_tokens),SUM(output_tokens),COUNT(output_tokens),
        COUNT(ttft_ms),AVG(ttft_ms)
-FROM telemetry_events
-WHERE signal_type='logs' AND event_time_ns>=? AND event_time_ns<=?
-GROUP BY bucket_start_ns`, bucketWidthNS, bucketWidthNS, sinceNS, untilNS)
+FROM normalized_logs
+GROUP BY bucket_start_ns`, sinceNS, untilNS, bucketWidthNS, bucketWidthNS)
 	if err != nil {
 		return nil, err
 	}
@@ -469,12 +471,11 @@ GROUP BY bucket_start_ns`, bucketWidthNS, bucketWidthNS, sinceNS, untilNS)
 	if err := rows.Close(); err != nil {
 		return nil, err
 	}
-	rows, err = s.db.QueryContext(ctx, `
-SELECT e.event_time_ns,e.output_tokens,s.end_time_ns-s.start_time_ns
-FROM telemetry_events e
+	rows, err = s.db.QueryContext(ctx, analyticsTrendLogsCTE()+`
+SELECT e.activity_time_ns,e.output_tokens,s.end_time_ns-s.start_time_ns
+FROM normalized_logs e
 JOIN spans s ON s.trace_id=e.trace_id AND s.span_id=e.span_id
-WHERE e.signal_type='logs' AND e.event_time_ns>=? AND e.event_time_ns<=?
-  AND e.output_tokens IS NOT NULL AND s.span_role='model' AND s.end_time_ns>s.start_time_ns`, sinceNS, untilNS)
+WHERE e.output_tokens IS NOT NULL AND s.span_role='model' AND s.end_time_ns>s.start_time_ns`, sinceNS, untilNS)
 	if err != nil {
 		return nil, err
 	}
@@ -506,12 +507,16 @@ WHERE e.signal_type='logs' AND e.event_time_ns>=? AND e.event_time_ns<=?
 		bucket.AverageRequestRateTPS = &averageRate
 		buckets[atNS] = bucket
 	}
-	rows, err = s.db.QueryContext(ctx, `
-SELECT (start_time_ns / ?)*? AS bucket_start_ns,COUNT(*),
-       COUNT(CASE WHEN duration_ms>=0 THEN 1 END),AVG(CASE WHEN duration_ms>=0 THEN duration_ms END)
-FROM tool_calls
-WHERE start_time_ns>=? AND start_time_ns<=?
-GROUP BY bucket_start_ns`, bucketWidthNS, bucketWidthNS, sinceNS, untilNS)
+	toolStartTime := "COALESCE(NULLIF(tc.start_time_ns,0),NULLIF(e.event_time_ns,0),e.received_at_ns)"
+	toolDuration := "COALESCE(tc.duration_ms," + trendNumericAttributeSQL("e", "duration_ms") + ")"
+	toolQuery := fmt.Sprintf(`
+SELECT (%[1]s / ?)*? AS bucket_start_ns,COUNT(*),
+       COUNT(CASE WHEN %[2]s>=0 THEN 1 END),AVG(CASE WHEN %[2]s>=0 THEN %[2]s END)
+FROM tool_calls tc
+LEFT JOIN telemetry_events e ON e.id=tc.source_event_id
+WHERE %[1]s>=? AND %[1]s<=?
+GROUP BY bucket_start_ns`, toolStartTime, toolDuration)
+	rows, err = s.db.QueryContext(ctx, toolQuery, bucketWidthNS, bucketWidthNS, sinceNS, untilNS)
 	if err != nil {
 		return nil, err
 	}
@@ -547,6 +552,51 @@ GROUP BY bucket_start_ns`, bucketWidthNS, bucketWidthNS, sinceNS, untilNS)
 		result = append(result, bucket)
 	}
 	return result, nil
+}
+
+func analyticsTrendLogsCTE() string {
+	// Fall back to receipt time for OTLP log records without an event timestamp.
+	return fmt.Sprintf(`WITH normalized_logs AS (
+SELECT COALESCE(NULLIF(event_time_ns,0),received_at_ns) AS activity_time_ns,
+       trace_id,span_id,
+       %s AS input_tokens,
+       %s AS output_tokens,
+       ttft_ms
+FROM telemetry_events
+WHERE signal_type='logs'
+  AND COALESCE(NULLIF(event_time_ns,0),received_at_ns)>=?
+  AND COALESCE(NULLIF(event_time_ns,0),received_at_ns)<=?
+) `,
+		trendTokenSQL("input_tokens", "input_token_count", "gen_ai.usage.input_tokens"),
+		trendTokenSQL("output_tokens", "output_token_count", "gen_ai.usage.output_tokens"),
+	)
+}
+
+func trendTokenSQL(column string, attributeKeys ...string) string {
+	// Older stored Codex events may have the token count only in raw JSON, as text.
+	values := []string{column}
+	for _, key := range attributeKeys {
+		path := fmt.Sprintf("'$.\"%s\"'", key)
+		jsonType := "json_type(attributes_json," + path + ")"
+		jsonValue := "json_extract(attributes_json," + path + ")"
+		textValue := "TRIM(CAST(" + jsonValue + " AS TEXT))"
+		values = append(values, fmt.Sprintf(`CASE
+WHEN %s IN ('integer','real') AND CAST(%s AS REAL)>=0 AND CAST(%s AS REAL)=CAST(%s AS INTEGER) THEN CAST(%s AS INTEGER)
+WHEN %s='text' AND %s<>'' AND %s NOT GLOB '*[^0-9]*' THEN CAST(%s AS INTEGER)
+END`, jsonType, jsonValue, jsonValue, jsonValue, jsonValue, jsonType, textValue, textValue, textValue))
+	}
+	return "COALESCE(" + strings.Join(values, ",") + ")"
+}
+
+func trendNumericAttributeSQL(alias, key string) string {
+	path := fmt.Sprintf("'$.\"%s\"'", key)
+	jsonType := "json_type(" + alias + ".attributes_json," + path + ")"
+	jsonValue := "json_extract(" + alias + ".attributes_json," + path + ")"
+	textValue := "TRIM(CAST(" + jsonValue + " AS TEXT))"
+	return fmt.Sprintf(`CASE
+WHEN %s IN ('integer','real') AND CAST(%s AS REAL)>=0 THEN CAST(%s AS REAL)
+WHEN %s='text' AND %s<>'' AND %s NOT GLOB '*[^0-9.eE+-]*' AND %s GLOB '*[0-9]*' THEN CAST(%s AS REAL)
+END`, jsonType, jsonValue, jsonValue, jsonType, textValue, textValue, textValue, textValue)
 }
 
 func nullableInt64(value sql.NullInt64) *int64 {

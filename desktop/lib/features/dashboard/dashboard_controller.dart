@@ -20,7 +20,7 @@ class DashboardController extends ChangeNotifier {
   String? _unassignedCursor;
   String? _processCursor;
   String? _toolCallCursor;
-  String _range = '1h';
+  String _range = '24h';
   String _toolOutcome = 'all';
   String _toolFilter = 'all';
   String _toolSessionFilter = '';

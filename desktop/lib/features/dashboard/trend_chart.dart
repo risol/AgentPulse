@@ -23,6 +23,7 @@ class TrendChart extends StatelessWidget {
     required this.series,
     required this.loading,
     this.error,
+    this.emptyMessage,
   });
 
   final String title;
@@ -31,6 +32,7 @@ class TrendChart extends StatelessWidget {
   final List<TrendLineSeries> series;
   final bool loading;
   final String? error;
+  final String? emptyMessage;
 
   @override
   Widget build(BuildContext context) {
@@ -79,9 +81,9 @@ class TrendChart extends StatelessWidget {
             else if (error != null && !hasSamples)
               SizedBox(height: 150, child: Center(child: Text(error!)))
             else if (!hasSamples)
-              const SizedBox(
+              SizedBox(
                 height: 150,
-                child: Center(child: Text('此时间范围没有可绘制的数据。')),
+                child: Center(child: Text(emptyMessage ?? '此时间范围没有可绘制的数据。')),
               )
             else
               SizedBox(

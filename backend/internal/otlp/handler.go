@@ -116,8 +116,12 @@ func (h *Handler) logs(w http.ResponseWriter, r *http.Request) {
 				batch.ObservedAttributeKeys = append(batch.ObservedAttributeKeys, attributeKeys(record.Attributes)...)
 				attrs := safeAttributes(record.Attributes)
 				traceID, spanID := idString(record.TraceId), idString(record.SpanId)
+				eventTime := timestamp(record.TimeUnixNano)
+				if eventTime == nil {
+					eventTime = timestamp(record.ObservedTimeUnixNano)
+				}
 				batch.Events = append(batch.Events, telemetry.Event{
-					EventTimeNS: timestamp(record.TimeUnixNano), TraceID: traceID, SpanID: spanID,
+					EventTimeNS: eventTime, TraceID: traceID, SpanID: spanID,
 					Name: "log_record", Attributes: attrs,
 				})
 			}

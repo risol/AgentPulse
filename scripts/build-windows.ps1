@@ -1,6 +1,7 @@
 param(
     [switch]$BuildDesktop,
-    [string]$OutputDirectory
+    [string]$OutputDirectory,
+    [string]$Version
 )
 $ErrorActionPreference = 'Stop'
 
@@ -18,7 +19,8 @@ $previousGoarch = $env:GOARCH
 
 New-Item -ItemType Directory -Force -Path $outputDir | Out-Null
 $versionLine = Select-String -Path $desktopManifest -Pattern '^version:\s*' | Select-Object -First 1
-$applicationVersion = if ($versionLine) { ($versionLine.Line -replace '^version:\s*', '').Trim() } else { 'development' }
+$manifestVersion = if ($versionLine) { ($versionLine.Line -replace '^version:\s*', '').Trim() } else { 'development' }
+$applicationVersion = if ([string]::IsNullOrWhiteSpace($Version)) { $manifestVersion } else { $Version.Trim() }
 Push-Location $backendDir
 try {
     $env:CGO_ENABLED = '0'
@@ -34,16 +36,21 @@ finally {
 }
 
 if ($BuildDesktop) {
-	$desktopReleaseDir = Join-Path $repoRoot 'desktop\build\windows\x64\runner\Release'
+    $desktopReleaseDir = Join-Path $repoRoot 'desktop\build\windows\x64\runner\Release'
     Push-Location (Join-Path $repoRoot 'desktop')
     try {
-        flutter build windows --release
-		if (-not (Test-Path -LiteralPath (Join-Path $desktopReleaseDir 'agentpulse.exe'))) {
-			throw 'Flutter Windows release output is missing agentpulse.exe.'
-		}
-		Get-ChildItem -LiteralPath $desktopReleaseDir -Force | ForEach-Object {
-			Copy-Item -LiteralPath $_.FullName -Destination $outputDir -Recurse -Force
-		}
+        if ([string]::IsNullOrWhiteSpace($Version)) {
+            flutter build windows --release
+        } else {
+            $desktopBuildName = $Version.Trim() -replace '^v', ''
+            flutter build windows --release --build-name $desktopBuildName
+        }
+        if (-not (Test-Path -LiteralPath (Join-Path $desktopReleaseDir 'agentpulse.exe'))) {
+            throw 'Flutter Windows release output is missing agentpulse.exe.'
+        }
+        Get-ChildItem -LiteralPath $desktopReleaseDir -Force | ForEach-Object {
+            Copy-Item -LiteralPath $_.FullName -Destination $outputDir -Recurse -Force
+        }
 		Copy-Item -LiteralPath (Join-Path $repoRoot 'scripts\Install-AgentPulse.ps1') -Destination $outputDir -Force
 		Copy-Item -LiteralPath (Join-Path $repoRoot 'scripts\Uninstall-AgentPulse.ps1') -Destination $outputDir -Force
 		Copy-Item -LiteralPath (Join-Path $repoRoot 'scripts\windows-package-readme.txt') -Destination (Join-Path $outputDir 'README.txt') -Force

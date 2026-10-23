@@ -5,6 +5,8 @@ package codexadapter
 import (
 	"context"
 	"errors"
+	"math"
+	"strconv"
 	"strings"
 
 	"github.com/agentpulse/agentpulse/backend/internal/telemetry"
@@ -176,6 +178,11 @@ func tokenAttribute(attributes map[string]any, keys ...string) *int64 {
 			if value <= uint64(^uint64(0)>>1) {
 				return int64Pointer(int64(value))
 			}
+		case string:
+			parsed, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
+			if err == nil && parsed >= 0 {
+				return int64Pointer(parsed)
+			}
 		}
 	}
 	return nil
@@ -192,10 +199,16 @@ func floatAttribute(attributes map[string]any, key string) *float64 {
 		value = float64(typed)
 	case int64:
 		value = float64(typed)
+	case string:
+		parsed, err := strconv.ParseFloat(strings.TrimSpace(typed), 64)
+		if err != nil {
+			return nil
+		}
+		value = parsed
 	default:
 		return nil
 	}
-	if value < 0 {
+	if value < 0 || math.IsNaN(value) || math.IsInf(value, 0) {
 		return nil
 	}
 	return &value

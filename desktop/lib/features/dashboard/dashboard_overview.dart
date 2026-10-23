@@ -307,7 +307,7 @@ class DashboardOverview extends StatelessWidget {
     return [
       TrendChart(
         title: 'Token 用量趋势',
-        description: '按时间桶汇总已观测到的输入和输出 Token；缺少数据的时段会留空。',
+        description: '汇总 Codex 已报告的输入和输出 Token；缺少数据的时段会留空。',
         bucketTimesNS: times,
         loading: loadingTrends,
         error: trendError,
@@ -327,10 +327,11 @@ class DashboardOverview extends StatelessWidget {
       const SizedBox(height: 10),
       TrendChart(
         title: '可观测输出速率趋势',
-        description: '仅使用日志与同一 trace/span 的模型请求匹配结果；没有可靠关联时不填充估算值。',
+        description: '只有输出 Token 日志与同一模型 Trace/Span 精确关联时才计算，不用估算值。',
         bucketTimesNS: times,
         loading: loadingTrends,
         error: trendError,
+        emptyMessage: '当前范围没有可精确关联到模型 Trace/Span 的输出 Token 样本。',
         series: [
           TrendLineSeries(
             label: '请求级输出速率（Token/秒）',
