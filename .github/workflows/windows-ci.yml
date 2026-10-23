@@ -1,0 +1,84 @@
+name: Windows CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+
+      - name: Check Go formatting
+        shell: pwsh
+        run: |
+          $goFiles = rg --files backend -g '*.go'
+          $unformatted = $goFiles | ForEach-Object { gofmt -l $_ } | Where-Object { $_ }
+          if ($unformatted) {
+            $unformatted
+            exit 1
+          }
+
+      - name: Test backend
+        working-directory: backend
+        run: go test ./...
+
+      - name: Build backend
+        working-directory: backend
+        run: go build ./...
+
+      - name: Check architecture boundaries
+        shell: pwsh
+        run: .\scripts\check-architecture.ps1
+
+  desktop:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Resolve Flutter dependencies
+        working-directory: desktop
+        run: flutter pub get
+
+      - name: Check Dart formatting
+        working-directory: desktop
+        run: dart format --output=none --set-exit-if-changed lib test
+
+      - name: Analyze desktop
+        working-directory: desktop
+        run: flutter analyze
+
+      - name: Test desktop
+        working-directory: desktop
+        run: flutter test
+
+      - name: Build offline Windows package
+        shell: pwsh
+        run: .\scripts\build-windows.ps1 -BuildDesktop
+
+      - name: Verify package install, upgrade, uninstall, and shutdown
+        shell: pwsh
+        run: .\scripts\verify-windows-package.ps1
+
+      - name: Verify Windows UI, OTLP, and dashboard latency
+        shell: pwsh
+        run: .\scripts\verify-windows-e2e.ps1

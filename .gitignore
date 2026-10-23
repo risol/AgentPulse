@@ -1,0 +1,19 @@
+# Go build output
+/backend/agentpulse.exe
+/backend/agentpulse
+/backend/*.db
+/backend/*.db-shm
+/backend/*.db-wal
+/dist/
+
+# Flutter / Dart output
+/desktop/.dart_tool/
+/desktop/build/
+/desktop/.flutter-plugins*
+/desktop/.packages
+
+# IDE and local configuration
+.idea/
+.vscode/
+*.iml
+*.log
