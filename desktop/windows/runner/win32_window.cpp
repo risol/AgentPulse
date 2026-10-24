@@ -197,6 +197,20 @@ Win32Window::MessageHandler(HWND hwnd,
 
       return 0;
     }
+    case WM_GETMINMAXINFO: {
+      auto min_max_info = reinterpret_cast<MINMAXINFO*>(lparam);
+      HMONITOR monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+      UINT dpi = FlutterDesktopGetDpiForMonitor(monitor);
+      double scale_factor = dpi > 0 ? dpi / 96.0 : 1.0;
+      RECT minimum = {0, 0, Scale(1100, scale_factor), Scale(720, scale_factor)};
+      const DWORD style = static_cast<DWORD>(GetWindowLongPtr(hwnd, GWL_STYLE));
+      const DWORD ex_style = static_cast<DWORD>(GetWindowLongPtr(hwnd, GWL_EXSTYLE));
+      if (AdjustWindowRectEx(&minimum, style, FALSE, ex_style)) {
+        min_max_info->ptMinTrackSize.x = minimum.right - minimum.left;
+        min_max_info->ptMinTrackSize.y = minimum.bottom - minimum.top;
+      }
+      return 0;
+    }
     case WM_SIZE: {
       RECT rect = GetClientArea();
       if (child_content_ != nullptr) {

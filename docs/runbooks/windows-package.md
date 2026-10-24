@@ -9,7 +9,7 @@ From the repository root in PowerShell:
 .\scripts\verify-windows-package.ps1 -PackagePath .\dist\AgentPulse-Windows-x64.zip
 ```
 
-The build writes the offline bundle to `dist\AgentPulse-Windows-x64.zip`. The verifier installs it under an isolated temporary profile and removes that profile after checking installation, upgrade, uninstall, receiver-port persistence, forced shutdown, and backend recovery. The smoke verifies the package lifecycle; it does not apply an operating-system network block or prove that all OS networking is unavailable.
+The build writes the offline bundle to `dist\AgentPulse-Windows-x64.zip`. The verifier installs it under an isolated temporary profile and removes that profile after checking installation, upgrade, uninstall, receiver-port persistence, Go-led startup, UI shutdown, and recovery. The smoke verifies the package lifecycle; it does not apply an operating-system network block or prove that all OS networking is unavailable.
 
 ## Install or upgrade
 
@@ -18,11 +18,11 @@ The build writes the offline bundle to `dist\AgentPulse-Windows-x64.zip`. The ve
 3. Run `Install-AgentPulse.ps1` from the extracted directory.
 4. Start AgentPulse from the Start menu.
 
-The app installs under `%LOCALAPPDATA%\Programs\AgentPulse`. Upgrades replace application files and preserve the separate database, logs, and Codex configuration.
+The app installs under `%LOCALAPPDATA%\Programs\AgentPulse`. The Start menu shortcut runs the Go launcher, which initializes logging and the receiver before starting Flutter. Upgrades replace application files and preserve the separate database, logs, and Codex configuration.
 
 ## Check collection health
 
-The default OTLP health endpoint is `http://127.0.0.1:4318/health`. A healthy response includes `"status":"ready"` and the current `schema_version`. The receiver port can be changed from Settings; after a change, use the endpoint shown in the Codex configuration preview.
+The default OTLP health endpoint is `http://127.0.0.1:4318/health`. A healthy response includes `"status":"ready"` and the current `schema_version`. The receiver port can be changed from Settings; AgentPulse switches the listener immediately, then use the endpoint shown in the Codex configuration preview.
 
 The application does not restart Codex. If it was configured while Codex was open, restart Codex from its normal UI and confirm that recent telemetry arrives before treating collection as healthy.
 

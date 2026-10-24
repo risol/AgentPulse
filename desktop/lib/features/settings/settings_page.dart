@@ -1,5 +1,10 @@
 import 'package:flutter/material.dart';
 
+import '../../ui/components/ap_components.dart';
+import '../../ui/theme/ap_colors.dart';
+import '../../ui/theme/ap_spacing.dart';
+import '../../ui/theme/ap_typography.dart';
+
 String formatSettingsBytes(dynamic raw) {
   final bytes = raw is num ? raw.toDouble() : 0.0;
   if (bytes < 1024) return '${bytes.toInt()} B';
@@ -48,6 +53,10 @@ class SettingsPage extends StatelessWidget {
     required this.onClearHistory,
     required this.onExportDiagnostics,
     required this.onCleanupLogs,
+    this.selectedSection = 0,
+    this.onSectionChanged,
+    this.processSettingsPage,
+    this.privacySettingsPage,
     super.key,
   });
 
@@ -87,22 +96,48 @@ class SettingsPage extends StatelessWidget {
   final VoidCallback onClearHistory;
   final VoidCallback onExportDiagnostics;
   final VoidCallback onCleanupLogs;
+  final int selectedSection;
+  final ValueChanged<int>? onSectionChanged;
+  final Widget? processSettingsPage;
+  final Widget? privacySettingsPage;
 
   @override
-  Widget build(BuildContext context) => ListView(
-    padding: const EdgeInsets.fromLTRB(36, 30, 36, 36),
-    children: [
-      const Text(
-        'Codex 配置',
-        style: TextStyle(fontSize: 28, fontWeight: FontWeight.w700),
-      ),
-      const SizedBox(height: 8),
-      Text(
-        '在这里查看并管理 Codex 的本地遥测接入。',
-        style: TextStyle(color: Colors.grey.shade700),
-      ),
-      const SizedBox(height: 24),
-      _CodexConfigurationCard(
+  Widget build(BuildContext context) {
+    final section = selectedSection.clamp(0, 5).toInt();
+    const labels = [
+      'Codex',
+      'Receiver',
+      'Process Monitoring',
+      'Privacy',
+      'Data Retention',
+      'Diagnostics & Export',
+    ];
+    const icons = [
+      Icons.smart_toy_outlined,
+      Icons.sensors_outlined,
+      Icons.account_tree_outlined,
+      Icons.privacy_tip_outlined,
+      Icons.storage_outlined,
+      Icons.medical_information_outlined,
+    ];
+    final titles = [
+      'Codex connection',
+      'OTLP receiver',
+      'Process monitoring',
+      'Privacy controls',
+      'Data retention',
+      'Diagnostics & export',
+    ];
+    final descriptions = [
+      'Configure the local Codex telemetry connection.',
+      'Set the loopback receiver endpoint used by Codex.',
+      'Choose the process tree and sampling policy to capture.',
+      'Review which process metadata is persisted locally.',
+      'Manage local database retention and exports.',
+      'Inspect backend health and export a sanitized support bundle.',
+    ];
+    Widget content = switch (section) {
+      0 => _CodexConfigurationCard(
         signals: signals,
         status: status,
         config: config,
@@ -114,8 +149,7 @@ class SettingsPage extends StatelessWidget {
         onApplyConfig: onApplyConfig,
         onRestoreConfig: onRestoreConfig,
       ),
-      const SizedBox(height: 18),
-      _ReceiverSettingsCard(
+      1 => _ReceiverSettingsCard(
         port: receiverPort,
         error: receiverSettingsError,
         loading: loadingReceiverSettings,
@@ -125,8 +159,24 @@ class SettingsPage extends StatelessWidget {
         onSave: onSaveReceiverSettings,
         onRefresh: onLoadReceiverSettings,
       ),
-      const SizedBox(height: 18),
-      _RetentionCard(
+      2 =>
+        processSettingsPage ??
+            const ApEmptyState(title: 'Process settings unavailable'),
+      3 => Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          privacySettingsPage ?? const SizedBox.shrink(),
+          const SizedBox(height: 12),
+          const ApPanel(
+            title: 'TELEMETRY PAYLOADS',
+            child: Text(
+              'Tool input and output payloads are not persisted or exposed by the local API. Tool call records contain metadata such as name, duration, status and correlation IDs.',
+              style: ApTypography.body,
+            ),
+          ),
+        ],
+      ),
+      4 => _RetentionCard(
         retention: retention,
         retentionDays: retentionDays,
         error: retentionError,
@@ -141,8 +191,7 @@ class SettingsPage extends StatelessWidget {
         onExport: onExportData,
         onClear: onClearHistory,
       ),
-      const SizedBox(height: 18),
-      _DiagnosticsCard(
+      _ => _DiagnosticsCard(
         status: status,
         backendVersion: backendVersion,
         apiAvailable: apiAvailable,
@@ -151,8 +200,76 @@ class SettingsPage extends StatelessWidget {
         onExport: onExportDiagnostics,
         onCleanup: onCleanupLogs,
       ),
-    ],
-  );
+    };
+    return Row(
+      children: [
+        Container(
+          width: 192,
+          color: ApColors.surface0,
+          child: ListView(
+            padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 10),
+            children: [
+              for (var i = 0; i < labels.length; i++)
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 2),
+                  child: Material(
+                    color: section == i
+                        ? ApColors.accent.withValues(alpha: .13)
+                        : Colors.transparent,
+                    borderRadius: BorderRadius.circular(6),
+                    child: InkWell(
+                      onTap: () => onSectionChanged?.call(i),
+                      borderRadius: BorderRadius.circular(6),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 10,
+                          vertical: 9,
+                        ),
+                        child: Row(
+                          children: [
+                            Icon(
+                              icons[i],
+                              size: 16,
+                              color: section == i
+                                  ? ApColors.accentStrong
+                                  : ApColors.textMuted,
+                            ),
+                            const SizedBox(width: 9),
+                            Expanded(
+                              child: Text(
+                                labels[i],
+                                style: ApTypography.small.copyWith(
+                                  color: section == i
+                                      ? ApColors.textPrimary
+                                      : ApColors.textSecondary,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        ),
+        const VerticalDivider(width: 1),
+        Expanded(
+          child: ListView(
+            padding: const EdgeInsets.all(ApSpacing.page),
+            children: [
+              Text(titles[section], style: ApTypography.pageTitle),
+              const SizedBox(height: 4),
+              Text(descriptions[section], style: ApTypography.small),
+              const SizedBox(height: 16),
+              content,
+            ],
+          ),
+        ),
+      ],
+    );
+  }
 }
 
 class _CodexConfigurationCard extends StatelessWidget {
@@ -190,7 +307,7 @@ class _CodexConfigurationCard extends StatelessWidget {
     final backups = (config['backups'] as List?)?.cast<String>() ?? [];
     return Card(
       elevation: 0,
-      color: Colors.white,
+      color: ApColors.surface1,
       child: Padding(
         padding: const EdgeInsets.all(20),
         child: Column(
@@ -256,7 +373,7 @@ class _CodexConfigurationCard extends StatelessWidget {
                   padding: const EdgeInsets.only(top: 10),
                   child: Text(
                     '应用后请重新启动 Codex。',
-                    style: TextStyle(color: Colors.grey.shade700),
+                    style: const TextStyle(color: ApColors.textMuted),
                   ),
                 ),
             ],
@@ -361,7 +478,7 @@ class _ReceiverSettingsCardState extends State<_ReceiverSettingsCard> {
     final port = _validPort;
     return Card(
       elevation: 0,
-      color: Colors.white,
+      color: ApColors.surface1,
       child: Padding(
         padding: const EdgeInsets.all(20),
         child: Column(
@@ -374,7 +491,7 @@ class _ReceiverSettingsCardState extends State<_ReceiverSettingsCard> {
             const SizedBox(height: 6),
             Text(
               '默认端口为 4318。更改后会短暂重启接收器；如果 Codex 已接入，请重新预览并应用新地址，然后重启 Codex。',
-              style: TextStyle(color: Colors.grey.shade700),
+              style: const TextStyle(color: ApColors.textMuted),
             ),
             if (widget.loading) ...[
               const SizedBox(height: 14),
@@ -489,7 +606,7 @@ class _RetentionCard extends StatelessWidget {
       ..sort();
     return Card(
       elevation: 0,
-      color: Colors.white,
+      color: ApColors.surface1,
       child: Padding(
         padding: const EdgeInsets.all(20),
         child: Column(
@@ -502,7 +619,7 @@ class _RetentionCard extends StatelessWidget {
             const SizedBox(height: 6),
             Text(
               '自动保留最近一段时间的遥测记录，进程历史使用独立设置。',
-              style: TextStyle(color: Colors.grey.shade700),
+              style: const TextStyle(color: ApColors.textMuted),
             ),
             if (loading && retention.isEmpty) ...[
               const SizedBox(height: 16),
@@ -597,7 +714,7 @@ class _DiagnosticsCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) => Card(
     elevation: 0,
-    color: Colors.white,
+    color: ApColors.surface1,
     child: Padding(
       padding: const EdgeInsets.all(20),
       child: Column(
@@ -614,12 +731,12 @@ class _DiagnosticsCard extends StatelessWidget {
           const SizedBox(height: 6),
           Text(
             '诊断包只包含版本、信号状态、队列统计和脱敏错误代码，不包含遥测内容、进程详情或 Codex 配置。',
-            style: TextStyle(color: Colors.grey.shade700),
+            style: const TextStyle(color: ApColors.textMuted),
           ),
           const SizedBox(height: 6),
           Text(
             '本地日志最多保留 3 个轮换文件，每个不超过 5 MB；14 天前的日志会自动清理。',
-            style: TextStyle(color: Colors.grey.shade700),
+            style: const TextStyle(color: ApColors.textMuted),
           ),
           const SizedBox(height: 14),
           Wrap(
@@ -654,13 +771,15 @@ class _SettingsNotice extends StatelessWidget {
   Widget build(BuildContext context) => Container(
     padding: const EdgeInsets.all(14),
     decoration: BoxDecoration(
-      color: isError ? const Color(0xfffff0ed) : const Color(0xffeef2ff),
+      color: isError
+          ? ApColors.danger.withValues(alpha: .1)
+          : ApColors.accent.withValues(alpha: .1),
       borderRadius: BorderRadius.circular(10),
     ),
     child: Text(
       message,
       style: TextStyle(
-        color: isError ? const Color(0xff9e3826) : const Color(0xff344b9a),
+        color: isError ? ApColors.danger : ApColors.accentStrong,
       ),
     ),
   );

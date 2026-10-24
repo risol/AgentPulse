@@ -9,12 +9,12 @@ import (
 	"io"
 	"log/slog"
 	"net"
-	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -37,6 +37,12 @@ func main() {
 	addressOverride := flag.String("otlp-address", "", "optional loopback OTLP/HTTP listen address override")
 	databasePath := flag.String("db", defaultDatabasePath(), "SQLite database path")
 	handshake := flag.Bool("handshake-stdout", false, "write the private local API startup handshake to stdout")
+	launchDesktopByDefault := strings.EqualFold(
+		strings.TrimSuffix(filepath.Base(os.Args[0]), filepath.Ext(os.Args[0])),
+		"agentpulse-launcher",
+	)
+	launchDesktop := flag.Bool("launch-desktop", launchDesktopByDefault, "start the Flutter desktop UI after the Go services are ready")
+	desktopExecutable := flag.String("desktop-executable", "", "optional path to the Flutter desktop executable")
 	flag.Parse()
 	logManager, logErr := applog.OpenDefault()
 	if logErr == nil {
@@ -99,26 +105,25 @@ func main() {
 		}
 	}()
 	changes := telemetry.NewChangeBus()
-	server := &http.Server{
-		Addr:              address,
-		Handler:           otlp.NewHandlerWithWriter(store, writeQueue, slog.Default(), changes),
-		ReadHeaderTimeout: 5 * time.Second,
-		ReadTimeout:       30 * time.Second,
-		WriteTimeout:      30 * time.Second,
-		IdleTimeout:       60 * time.Second,
-	}
-	listener, err := net.Listen("tcp", address)
+	receiver, err := startReceiverRuntime(address, otlp.NewHandlerWithWriter(store, writeQueue, slog.Default(), changes))
 	if err != nil {
 		slog.Error("start OTLP receiver", "address", address, "error", err)
 		os.Exit(1)
 	}
-	defer listener.Close()
-	slog.Info("OTLP receiver ready", "address", listener.Addr().String(), "database", *databasePath)
-	otlpEndpoint, err := endpointForListener(listener)
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := receiver.Shutdown(shutdownCtx); err != nil {
+			slog.Warn("shut down receiver", "error", err)
+		}
+	}()
+	slog.Info("OTLP receiver ready", "address", receiver.Address(), "database", *databasePath)
+	otlpEndpoint, err := endpointForAddress(receiver.Address())
 	if err != nil {
 		slog.Error("resolve OTLP endpoint", "error", err)
 		os.Exit(1)
 	}
+	endpoint := &mutableEndpoint{value: otlpEndpoint}
 	api, err := appapi.Start(appapi.Dependencies{
 		Process:            application.NewProcessService(store, processMonitor),
 		SessionQueries:     application.NewSessionQueryService(store),
@@ -128,14 +133,27 @@ func main() {
 		IngestDiagnostics:  application.NewIngestDiagnosticService(store),
 		TelemetryOverview:  application.NewTelemetryOverviewService(store),
 		TelemetryData:      application.NewTelemetryDataService(store),
-		CodexConfiguration: codexconfig.Commands{Endpoint: otlpEndpoint},
+		CodexConfiguration: codexconfig.Commands{EndpointProvider: endpoint.Load},
 		IngestQueue:        writeQueue,
 		BackendVersion:     version,
-		ReceiverAddress:    listener.Addr().String(),
+		ReceiverAddress:    receiver.Address(),
 		ReceiverSettings:   receiverSettings,
 		CheckReceiverPort:  checkReceiverPortAvailability,
-		LogCleaner:         logManager,
-		Changes:            changes,
+		ChangeReceiverPort: func(port int) (string, error) {
+			address, err := receiver.ChangePort(port)
+			if err != nil {
+				return "", err
+			}
+			nextEndpoint, err := endpointForAddress(address)
+			if err != nil {
+				return "", err
+			}
+			endpoint.Store(nextEndpoint)
+			slog.Info("OTLP receiver switched to new port", "address", address)
+			return address, nil
+		},
+		LogCleaner: logManager,
+		Changes:    changes,
 	})
 	if err != nil {
 		slog.Error("start application API", "error", err)
@@ -149,8 +167,16 @@ func main() {
 		processMonitor.Wait()
 		api.WaitRetention()
 	}()
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := receiver.Shutdown(shutdownCtx); err != nil {
+			slog.Error("shut down receiver", "error", err)
+		}
+	}()
 	if *handshake {
-		if err := json.NewEncoder(os.Stdout).Encode(map[string]any{"api_version": 1, "backend_version": version, "api_address": api.Address(), "api_token": api.Token(), "otlp_address": listener.Addr().String()}); err != nil {
+		if err := json.NewEncoder(os.Stdout).Encode(map[string]any{"api_version": 1, "backend_version": version, "api_address": api.Address(), "api_token": api.Token(), "otlp_address": receiver.Address()}); err != nil {
 			slog.Error("write startup handshake", "error", err)
 			os.Exit(1)
 		}
@@ -160,17 +186,48 @@ func main() {
 		}()
 	}
 
-	go func() {
-		<-ctx.Done()
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := server.Shutdown(shutdownCtx); err != nil {
-			slog.Error("shut down receiver", "error", err)
+	var desktopProcess *os.Process
+	var desktopDone <-chan struct{}
+	if *launchDesktop {
+		executable, err := resolveDesktopExecutable(*desktopExecutable)
+		if err != nil {
+			slog.Error("locate desktop UI", "error", err)
+			return
 		}
-	}()
-	if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		slog.Error("serve OTLP requests", "error", err)
-		os.Exit(1)
+		command, err := startDesktopProcess(executable, api.Address(), api.Token(), version)
+		if err != nil {
+			slog.Error("start desktop UI", "error", err)
+			return
+		}
+		desktopProcess = command.Process
+		done := make(chan struct{})
+		desktopDone = done
+		go func() {
+			if err := command.Wait(); err != nil && ctx.Err() == nil {
+				slog.Warn("desktop UI exited with an error", "error", err)
+			}
+			close(done)
+			stop()
+		}()
+	}
+	if desktopProcess != nil {
+		defer func() {
+			select {
+			case <-desktopDone:
+			default:
+				_ = desktopProcess.Kill()
+				<-desktopDone
+			}
+		}()
+	}
+
+	select {
+	case <-ctx.Done():
+	case err := <-receiver.Errors():
+		if err != nil {
+			slog.Error("serve OTLP requests", "error", err)
+			stop()
+		}
 	}
 }
 
@@ -193,12 +250,16 @@ func isLoopbackAddress(address string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-func endpointForListener(listener net.Listener) (string, error) {
-	address, okay := listener.Addr().(*net.TCPAddr)
-	if !okay || address.Port < 1 || address.Port > 65535 {
+func endpointForAddress(address string) (string, error) {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
 		return "", errors.New("OTLP listener has an invalid TCP address")
 	}
-	return "http://" + net.JoinHostPort(address.IP.String(), strconv.Itoa(address.Port)), nil
+	parsedPort, err := strconv.Atoi(port)
+	if err != nil || parsedPort < 1 || parsedPort > 65535 {
+		return "", errors.New("OTLP listener has an invalid TCP port")
+	}
+	return "http://" + net.JoinHostPort(host, strconv.Itoa(parsedPort)), nil
 }
 
 func checkReceiverPortAvailability(port int) error {
@@ -207,4 +268,21 @@ func checkReceiverPortAvailability(port int) error {
 		return err
 	}
 	return listener.Close()
+}
+
+type mutableEndpoint struct {
+	mu    sync.RWMutex
+	value string
+}
+
+func (endpoint *mutableEndpoint) Load() string {
+	endpoint.mu.RLock()
+	defer endpoint.mu.RUnlock()
+	return endpoint.value
+}
+
+func (endpoint *mutableEndpoint) Store(value string) {
+	endpoint.mu.Lock()
+	endpoint.value = value
+	endpoint.mu.Unlock()
 }

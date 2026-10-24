@@ -121,7 +121,9 @@ class SettingsController extends ChangeNotifier {
       _receiverSettings = settings;
       _receiverPort = (settings['port'] as num?)?.toInt() ?? _receiverPort;
       _receiverSettingsError = null;
-      return snapshot['restart_required'] == true;
+      return snapshot['receiver_restarted'] == true ||
+          (snapshot['receiver_restarted'] == null &&
+              snapshot['restart_required'] == true);
     } catch (error) {
       if (_isCurrent(api, generation)) {
         _receiverSettingsError = '保存接收器设置失败：$error';

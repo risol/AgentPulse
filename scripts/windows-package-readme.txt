@@ -8,6 +8,8 @@ Install or upgrade
    powershell -NoProfile -ExecutionPolicy Bypass -File .\Install-AgentPulse.ps1
 4. Start AgentPulse from the Start menu.
 
+The Go launcher starts logging and the local receiver before opening the Flutter interface. Closing the interface shuts down the receiver.
+
 The installer stores the application under your user profile and does not need administrator access.
 Upgrades replace the application files in place. The SQLite database, logs, and Codex configuration are kept separately and are preserved.
 

@@ -1,6 +1,10 @@
 import 'package:flutter/material.dart';
 
 import '../../core/api/local_api_client.dart';
+import '../../ui/components/ap_components.dart';
+import '../../ui/theme/ap_colors.dart';
+import '../../ui/theme/ap_spacing.dart';
+import '../../ui/theme/ap_typography.dart';
 
 class SessionExplorerPage extends StatefulWidget {
   const SessionExplorerPage({
@@ -25,6 +29,8 @@ class _SessionExplorerPageState extends State<SessionExplorerPage> {
   int _generation = 0;
   bool _loading = false;
   bool _loadingMore = false;
+  String _sortKey = 'started_at';
+  bool _sortAscending = false;
 
   @override
   void initState() {
@@ -105,14 +111,6 @@ class _SessionExplorerPageState extends State<SessionExplorerPage> {
     _load();
   }
 
-  String _displayId(Map<String, dynamic> session) {
-    final externalId = session['external_id'] as String?;
-    final id = externalId?.isNotEmpty == true
-        ? externalId!
-        : session['id'] as String? ?? '';
-    return id.length > 36 ? '${id.substring(0, 33)}…' : id;
-  }
-
   String _duration(dynamic value) {
     if (value is! num || value < 0) return '未知';
     if (value < 1000) return '${value.round()} 毫秒';
@@ -131,34 +129,117 @@ class _SessionExplorerPageState extends State<SessionExplorerPage> {
     return '${parsed.year}-${two(parsed.month)}-${two(parsed.day)} ${two(parsed.hour)}:${two(parsed.minute)}';
   }
 
-  Widget _sessionCard(Map<String, dynamic> session) {
-    final model = session['model'] as String? ?? '模型未知';
-    final quality = session['data_quality'] == 'complete' ? '字段较完整' : '部分字段';
-    final input = session['input_tokens'] ?? '—';
-    final output = session['output_tokens'] ?? '—';
-    return Card(
-      elevation: 0,
-      color: Colors.white,
-      margin: const EdgeInsets.only(bottom: 10),
-      child: ListTile(
-        contentPadding: const EdgeInsets.symmetric(horizontal: 18, vertical: 8),
-        leading: const Icon(
-          Icons.chat_bubble_outline,
-          color: Color(0xff4866e8),
-        ),
-        title: Text('会话 ${_displayId(session)}'),
-        subtitle: Padding(
-          padding: const EdgeInsets.only(top: 6),
-          child: Text(
-            '$model · 最近活动 ${_time(session['last_activity_at'])}\n'
-            '可观测跨度 ${_duration(session['activity_duration_ms'])} · ${session['event_count'] ?? 0} 条事件 · '
-            '工具 ${session['tool_call_count'] ?? 0} · 命令 ${session['command_count'] ?? 0} · 失败 ${session['failed_call_count'] ?? 0}\n'
-            '输入 $input / 输出 $output tokens · $quality',
+  List<Map<String, dynamic>> get _sortedSessions {
+    final values = [..._sessions];
+    int compare(Map<String, dynamic> a, Map<String, dynamic> b) {
+      final left = a[_sortKey];
+      final right = b[_sortKey];
+      int result;
+      if (left is num && right is num) {
+        result = left.compareTo(right);
+      } else {
+        result = '${left ?? ''}'.compareTo('${right ?? ''}');
+      }
+      return _sortAscending ? result : -result;
+    }
+
+    values.sort(compare);
+    return values;
+  }
+
+  void _sort(String key, bool ascending) => setState(() {
+    _sortKey = key;
+    _sortAscending = ascending;
+  });
+
+  Widget _tableRow(Map<String, dynamic> session) {
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: () => widget.onOpenSession(session),
+        child: Container(
+          height: 38,
+          padding: const EdgeInsets.symmetric(horizontal: 12),
+          decoration: BoxDecoration(
+            border: Border(bottom: BorderSide(color: ApColors.borderMuted)),
+          ),
+          child: Row(
+            children: [
+              SizedBox(
+                width: 150,
+                child: Text(
+                  _time(session['started_at']),
+                  style: ApTypography.code,
+                ),
+              ),
+              SizedBox(
+                width: 84,
+                child: Text(
+                  _duration(session['activity_duration_ms']),
+                  style: ApTypography.small,
+                ),
+              ),
+              SizedBox(
+                width: 130,
+                child: Text(
+                  session['model'] as String? ?? '未知',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: ApTypography.small,
+                ),
+              ),
+              SizedBox(
+                width: 140,
+                child: Text(
+                  '${session['input_tokens'] ?? '—'} / ${session['output_tokens'] ?? '—'}',
+                  style: ApTypography.small,
+                ),
+              ),
+              SizedBox(
+                width: 76,
+                child: Text(
+                  '${session['tool_call_count'] ?? 0}',
+                  style: ApTypography.small,
+                ),
+              ),
+              SizedBox(
+                width: 76,
+                child: Text(
+                  '${session['command_count'] ?? 0}',
+                  style: ApTypography.small,
+                ),
+              ),
+              SizedBox(
+                width: 70,
+                child: Text(
+                  '${session['failed_call_count'] ?? 0}',
+                  style: ApTypography.small.copyWith(
+                    color: ((session['failed_call_count'] as num?) ?? 0) > 0
+                        ? ApColors.danger
+                        : null,
+                  ),
+                ),
+              ),
+              SizedBox(
+                width: 112,
+                child: ApQualityBadge(
+                  quality: ApQualityBadge.fromValue(session['data_quality']),
+                ),
+              ),
+              IconButton(
+                onPressed: () => widget.onOpenSession(session),
+                tooltip: 'Open run',
+                visualDensity: VisualDensity.compact,
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints.tightFor(
+                  width: 28,
+                  height: 28,
+                ),
+                icon: const Icon(Icons.open_in_new, size: 15),
+              ),
+            ],
           ),
         ),
-        isThreeLine: true,
-        trailing: const Icon(Icons.chevron_right),
-        onTap: () => widget.onOpenSession(session),
       ),
     );
   }
@@ -168,18 +249,25 @@ class _SessionExplorerPageState extends State<SessionExplorerPage> {
     onRefresh: _load,
     child: ListView(
       physics: const AlwaysScrollableScrollPhysics(),
-      padding: const EdgeInsets.fromLTRB(36, 30, 36, 36),
+      padding: const EdgeInsets.all(ApSpacing.page),
       children: [
+        Row(
+          children: [
+            const Expanded(child: Text('Runs', style: ApTypography.pageTitle)),
+            Text('${_sessions.length} loaded', style: ApTypography.small),
+            IconButton(
+              onPressed: _load,
+              tooltip: 'Refresh runs',
+              icon: const Icon(Icons.refresh),
+            ),
+          ],
+        ),
+        const SizedBox(height: 4),
         const Text(
-          '会话',
-          style: TextStyle(fontSize: 28, fontWeight: FontWeight.w700),
+          'Historical Codex executions · activity range reflects observed telemetry spans.',
+          style: ApTypography.small,
         ),
-        const SizedBox(height: 8),
-        Text(
-          '按活动时间和模型筛选。会话没有明确结束信号时，展示的是可观测活动跨度。',
-          style: TextStyle(color: Colors.grey.shade700),
-        ),
-        const SizedBox(height: 16),
+        const SizedBox(height: 14),
         Wrap(
           spacing: 12,
           runSpacing: 10,
@@ -190,15 +278,11 @@ class _SessionExplorerPageState extends State<SessionExplorerPage> {
               child: DropdownButtonFormField<String>(
                 initialValue: _range,
                 isExpanded: true,
-                decoration: const InputDecoration(
-                  labelText: '活动时间',
-                  border: OutlineInputBorder(),
-                  isDense: true,
-                ),
+                decoration: const InputDecoration(labelText: 'Time range'),
                 items: const [
-                  DropdownMenuItem(value: 'all', child: Text('全部时间')),
-                  DropdownMenuItem(value: '24h', child: Text('最近 24 小时')),
-                  DropdownMenuItem(value: '7d', child: Text('最近 7 天')),
+                  DropdownMenuItem(value: 'all', child: Text('All time')),
+                  DropdownMenuItem(value: '24h', child: Text('Last 24 hours')),
+                  DropdownMenuItem(value: '7d', child: Text('Last 7 days')),
                 ],
                 onChanged: _selectRange,
               ),
@@ -210,17 +294,16 @@ class _SessionExplorerPageState extends State<SessionExplorerPage> {
                 textInputAction: TextInputAction.search,
                 onSubmitted: (_) => _load(),
                 decoration: const InputDecoration(
-                  labelText: '模型包含',
-                  hintText: '例如 gpt-5',
-                  border: OutlineInputBorder(),
-                  isDense: true,
+                  labelText: 'Model contains',
+                  hintText: 'e.g. gpt-5',
+                  prefixIcon: Icon(Icons.search, size: 16),
                 ),
               ),
             ),
             FilledButton.icon(
               onPressed: _loading ? null : _load,
               icon: const Icon(Icons.search),
-              label: const Text('筛选'),
+              label: const Text('Filter'),
             ),
             TextButton(
               onPressed: () {
@@ -230,52 +313,118 @@ class _SessionExplorerPageState extends State<SessionExplorerPage> {
                 });
                 _load();
               },
-              child: const Text('清除'),
+              child: const Text('Reset'),
             ),
           ],
         ),
         const SizedBox(height: 8),
-        Text(
-          '当前遥测不提供可靠的会话状态或项目路径，因此不显示这两项筛选。',
-          style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
-        ),
-        const SizedBox(height: 18),
+        const SizedBox(height: 12),
         if (_error != null)
-          Card(
-            color: const Color(0xfffff0ed),
-            child: ListTile(
-              title: Text(_error!),
-              trailing: IconButton(
-                onPressed: _loading ? null : _load,
-                icon: const Icon(Icons.refresh),
-                tooltip: '重试',
-              ),
-            ),
-          ),
+          ApErrorState(message: _error!, onRetry: _loading ? null : _load),
         if (_loading && _sessions.isEmpty) const LinearProgressIndicator(),
         if (!_loading && _error == null && _sessions.isEmpty)
-          const Card(
-            color: Colors.white,
-            child: Padding(
-              padding: EdgeInsets.all(20),
-              child: Text('所选条件下没有会话。'),
+          const SizedBox(
+            height: 280,
+            child: ApEmptyState(
+              title: 'No runs yet',
+              message:
+                  'AgentPulse is connected and waiting for Codex activity.',
             ),
           ),
-        for (final session in _sessions) _sessionCard(session),
-        if (_cursor != null)
-          Center(
-            child: OutlinedButton.icon(
-              onPressed: _loadingMore ? null : () => _load(append: true),
-              icon: _loadingMore
-                  ? const SizedBox.square(
-                      dimension: 16,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : const Icon(Icons.expand_more),
-              label: Text(_loadingMore ? '正在加载' : '加载更多会话'),
+        if (_sessions.isNotEmpty)
+          Container(
+            decoration: BoxDecoration(
+              color: ApColors.surface1,
+              border: Border.all(color: ApColors.borderMuted),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Container(
+                  height: 34,
+                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                  decoration: const BoxDecoration(
+                    color: ApColors.surface2,
+                    borderRadius: BorderRadius.vertical(
+                      top: Radius.circular(8),
+                    ),
+                  ),
+                  child: Row(
+                    children: [
+                      _sortHeader('Started', 'started_at', 150),
+                      _sortHeader('Duration', 'activity_duration_ms', 84),
+                      _sortHeader('Model', 'model', 130),
+                      _sortHeader('Input / Output', 'input_tokens', 140),
+                      _sortHeader('Tools', 'tool_call_count', 76),
+                      _sortHeader('Commands', 'command_count', 76),
+                      _sortHeader('Failures', 'failed_call_count', 70),
+                      const SizedBox(
+                        width: 112,
+                        child: Text('Quality', style: ApTypography.micro),
+                      ),
+                    ],
+                  ),
+                ),
+                for (final session in _sortedSessions) _tableRow(session),
+                Padding(
+                  padding: const EdgeInsets.all(10),
+                  child: Row(
+                    children: [
+                      Text(
+                        'Select a run to inspect its execution details.',
+                        style: ApTypography.micro,
+                      ),
+                      const Spacer(),
+                      if (_cursor != null)
+                        OutlinedButton.icon(
+                          onPressed: _loadingMore
+                              ? null
+                              : () => _load(append: true),
+                          icon: _loadingMore
+                              ? const SizedBox(
+                                  width: 14,
+                                  height: 14,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                  ),
+                                )
+                              : const Icon(Icons.expand_more, size: 16),
+                          label: Text(_loadingMore ? 'Loading' : 'Load more'),
+                        ),
+                    ],
+                  ),
+                ),
+              ],
             ),
           ),
+        if (_cursor != null) const SizedBox(height: 4),
       ],
+    ),
+  );
+
+  Widget _sortHeader(String label, String key, double width) => SizedBox(
+    width: width,
+    child: InkWell(
+      onTap: () => _sort(key, _sortKey == key ? !_sortAscending : false),
+      child: Row(
+        children: [
+          Flexible(
+            child: Text(
+              label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: ApTypography.micro,
+            ),
+          ),
+          if (_sortKey == key)
+            Icon(
+              _sortAscending ? Icons.arrow_upward : Icons.arrow_downward,
+              size: 11,
+              color: ApColors.accentStrong,
+            ),
+        ],
+      ),
     ),
   );
 }

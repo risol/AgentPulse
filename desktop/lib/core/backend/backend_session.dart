@@ -5,19 +5,44 @@ import 'dart:io';
 class BackendSession {
   BackendSession._({
     required this._process,
+    required this.exitCode,
     required this.apiUri,
     required this.apiToken,
     required this.version,
   });
 
-  final Process _process;
+  final Process? _process;
+  final Future<int> exitCode;
   final Uri apiUri;
   final String apiToken;
   final String version;
 
-  Future<int> get exitCode => _process.exitCode;
+  bool get managedByLauncher => _process == null;
 
   static Future<BackendSession> start() async {
+    final environment = Platform.environment;
+    final apiAddress = environment['AGENTPULSE_API_ADDRESS'];
+    final apiToken = environment['AGENTPULSE_API_TOKEN'];
+    if (apiAddress != null || apiToken != null) {
+      if (apiAddress == null || apiToken == null) {
+        throw const BackendStartupException('Go 启动器没有提供完整的本地 API 连接信息。');
+      }
+      final handshake = BackendHandshake.parse(
+        jsonEncode({
+          'api_address': apiAddress,
+          'api_token': apiToken,
+          'backend_version': environment['AGENTPULSE_BACKEND_VERSION'],
+        }),
+      );
+      return BackendSession._(
+        process: null,
+        exitCode: Completer<int>().future,
+        apiUri: handshake.apiUri,
+        apiToken: handshake.apiToken,
+        version: handshake.version,
+      );
+    }
+
     final executable = await _findBackend();
     final process = await Process.start(
       executable.$1,
@@ -56,6 +81,7 @@ class BackendSession {
       final handshake = BackendHandshake.parse(readyLine);
       return BackendSession._(
         process: process,
+        exitCode: process.exitCode,
         apiUri: handshake.apiUri,
         apiToken: handshake.apiToken,
         version: handshake.version,
@@ -77,7 +103,11 @@ class BackendSession {
     }
   }
 
-  Future<void> stop() => _stopProcess(_process);
+  Future<void> stop() {
+    final process = _process;
+    if (process == null) return Future<void>.value();
+    return _stopProcess(process);
+  }
 
   static Future<void> _stopProcess(Process process) async {
     try {
@@ -102,17 +132,18 @@ class BackendSession {
       Directory('${cwd.parent.path}${Platform.pathSeparator}dist'),
       Directory('${cwd.path}${Platform.pathSeparator}dist'),
     ];
+    final backendNames = Platform.isWindows
+        ? ['agentpulse-backend.exe', 'agentpulse.exe']
+        : ['agentpulse-backend', 'agentpulse'];
     for (final directory in candidates) {
-      for (final name in ['agentpulse-backend.exe', 'agentpulse.exe']) {
+      for (final name in backendNames) {
         final binary = File('${directory.path}${Platform.pathSeparator}$name');
         if (await binary.exists()) {
           return (binary.path, ['--handshake-stdout'], directory.path);
         }
       }
     }
-    throw StateError(
-      '未找到 AgentPulse 后端程序。请先运行 Windows 构建脚本，或设置 AGENTPULSE_BACKEND。',
-    );
+    throw StateError('未找到 AgentPulse 后端程序。请先构建 Go 后端，或设置 AGENTPULSE_BACKEND。');
   }
 }
 

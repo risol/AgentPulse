@@ -8,6 +8,7 @@ $sourceDirectory = [IO.Path]::GetFullPath((Split-Path -Parent $MyInvocation.MyCo
 $InstallDirectory = [IO.Path]::GetFullPath((Join-Path $env:LOCALAPPDATA 'Programs\AgentPulse'))
 $requiredFiles = @(
     'agentpulse.exe',
+    'agentpulse-launcher.exe',
     'agentpulse-backend.exe',
     'flutter_windows.dll',
     'data\app.so',
@@ -20,9 +21,12 @@ foreach ($relativePath in $requiredFiles) {
     }
 }
 
-$runningProcess = Get-CimInstance Win32_Process -Filter "Name = 'agentpulse.exe'" -ErrorAction SilentlyContinue |
+$runningProcess = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
     Where-Object {
-        $_.ExecutablePath -and [IO.Path]::GetFullPath($_.ExecutablePath).Equals($InstallDirectory + '\agentpulse.exe', [StringComparison]::OrdinalIgnoreCase)
+        if ($_.Name -notin @('agentpulse-launcher.exe', 'agentpulse.exe') -or -not $_.ExecutablePath) { return $false }
+        $processPath = [IO.Path]::GetFullPath($_.ExecutablePath)
+        $processPath.Equals((Join-Path $InstallDirectory 'agentpulse-launcher.exe'), [StringComparison]::OrdinalIgnoreCase) -or
+            $processPath.Equals((Join-Path $InstallDirectory 'agentpulse.exe'), [StringComparison]::OrdinalIgnoreCase)
     } |
     Select-Object -First 1
 if ($runningProcess) {
@@ -73,7 +77,9 @@ try {
         $shell = New-Object -ComObject WScript.Shell
 
         $appShortcut = $shell.CreateShortcut((Join-Path $shortcutDirectory 'AgentPulse.lnk'))
-        $appShortcut.TargetPath = Join-Path $InstallDirectory 'agentpulse.exe'
+        $appShortcut.TargetPath = Join-Path $InstallDirectory 'agentpulse-launcher.exe'
+        $appShortcut.Arguments = '--launch-desktop'
+        $appShortcut.IconLocation = Join-Path $InstallDirectory 'agentpulse.exe'
         $appShortcut.WorkingDirectory = $InstallDirectory
         $appShortcut.Save()
 

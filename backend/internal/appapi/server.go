@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/agentpulse/agentpulse/backend/internal/application"
@@ -38,8 +39,11 @@ type Server struct {
 	codexConfiguration application.CodexConfiguration
 	ingestQueue        IngestQueueStatus
 	backendVersion     string
+	receiverAddressMu  sync.RWMutex
 	receiverAddress    string
+	receiverSettingsMu sync.Mutex
 	checkReceiverPort  func(int) error
+	changeReceiverPort func(int) (string, error)
 	logCleaner         ApplicationLogCleaner
 	changes            *telemetry.ChangeBus
 	requestLimiter     *requestRateLimiter
@@ -72,6 +76,7 @@ type Dependencies struct {
 	ReceiverAddress    string
 	ReceiverSettings   *application.ReceiverSettingsService
 	CheckReceiverPort  func(int) error
+	ChangeReceiverPort func(int) (string, error)
 	LogCleaner         ApplicationLogCleaner
 	Changes            *telemetry.ChangeBus
 }
@@ -122,9 +127,10 @@ func Start(dependencies Dependencies) (*Server, error) {
 		receiverSettings:   dependencies.ReceiverSettings,
 		codexConfiguration: dependencies.CodexConfiguration,
 		ingestQueue:        dependencies.IngestQueue, backendVersion: dependencies.BackendVersion,
-		receiverAddress:   dependencies.ReceiverAddress,
-		checkReceiverPort: dependencies.CheckReceiverPort,
-		logCleaner:        dependencies.LogCleaner, changes: dependencies.Changes,
+		receiverAddress:    dependencies.ReceiverAddress,
+		checkReceiverPort:  dependencies.CheckReceiverPort,
+		changeReceiverPort: dependencies.ChangeReceiverPort,
+		logCleaner:         dependencies.LogCleaner, changes: dependencies.Changes,
 		requestLimiter: newRequestRateLimiter(
 			apiRequestsPerSecond, apiRequestBurst, time.Now,
 		),
@@ -637,27 +643,50 @@ func (s *Server) updateReceiverSettings(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_receiver_settings", "message": err.Error()})
 		return
 	}
+	s.receiverSettingsMu.Lock()
+	defer s.receiverSettingsMu.Unlock()
 	current, err := s.receiverSettings.Load(r.Context())
 	if err != nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "receiver_settings_unavailable"})
 		return
 	}
+	var receiverAddress string
 	if request.Port != current.Port {
 		if err := s.checkReceiverPort(request.Port); err != nil {
 			writeJSON(w, http.StatusConflict, map[string]string{"error": "receiver_port_unavailable", "message": "所选端口当前不可用，请选择未被占用的端口。"})
 			return
 		}
+		if s.changeReceiverPort != nil {
+			receiverAddress, err = s.changeReceiverPort(request.Port)
+			if err != nil {
+				writeJSON(w, http.StatusConflict, map[string]string{"error": "receiver_port_unavailable", "message": "无法启动所选接收端口，请选择其他端口。"})
+				return
+			}
+		}
 	}
 	settings, restartRequired, err := s.receiverSettings.Update(r.Context(), request.Port)
 	if errors.Is(err, application.ErrInvalidReceiverPort) {
+		if receiverAddress != "" && s.changeReceiverPort != nil {
+			_, _ = s.changeReceiverPort(current.Port)
+		}
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_receiver_settings", "message": err.Error()})
 		return
 	}
 	if err != nil {
+		if receiverAddress != "" && s.changeReceiverPort != nil {
+			_, _ = s.changeReceiverPort(current.Port)
+		}
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "receiver_settings_unavailable"})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"settings": settings, "restart_required": restartRequired})
+	if receiverAddress != "" {
+		s.setReceiverAddress(receiverAddress)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"settings": settings, "restart_required": restartRequired,
+		"receiver_restarted": receiverAddress != "",
+		"receiver_address":   s.currentReceiverAddress(),
+	})
 }
 
 func (s *Server) updateDataRetentionSettings(w http.ResponseWriter, r *http.Request) {
@@ -795,6 +824,18 @@ func (s *Server) Address() string { return s.listener.Addr().String() }
 func (s *Server) Token() string   { return s.token }
 func (s *Server) Close() error    { return s.http.Close() }
 
+func (s *Server) currentReceiverAddress() string {
+	s.receiverAddressMu.RLock()
+	defer s.receiverAddressMu.RUnlock()
+	return s.receiverAddress
+}
+
+func (s *Server) setReceiverAddress(address string) {
+	s.receiverAddressMu.Lock()
+	s.receiverAddress = address
+	s.receiverAddressMu.Unlock()
+}
+
 func (s *Server) authorize(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if origin := r.Header.Get("Origin"); origin != "" {
@@ -833,7 +874,7 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 	result := map[string]any{
 		"api_version": 1, "backend_version": s.backendVersion,
 		"schema_version": health.SchemaVersion, "receiver": "ready",
-		"receiver_address": s.receiverAddress,
+		"receiver_address": s.currentReceiverAddress(),
 		"signals":          health.Signals, "process_monitor": s.processMonitorStatus(),
 	}
 	if diagnostics, err := s.ingestDiagnostics.Snapshot(r.Context()); err == nil {

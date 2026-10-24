@@ -5,10 +5,12 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $installDirectory = [IO.Path]::GetFullPath((Split-Path -Parent $MyInvocation.MyCommand.Path))
-$applicationPath = [IO.Path]::GetFullPath((Join-Path $installDirectory 'agentpulse.exe'))
-$runningProcess = Get-CimInstance Win32_Process -Filter "Name = 'agentpulse.exe'" -ErrorAction SilentlyContinue |
+$runningProcess = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
     Where-Object {
-        $_.ExecutablePath -and [IO.Path]::GetFullPath($_.ExecutablePath).Equals($applicationPath, [StringComparison]::OrdinalIgnoreCase)
+        if ($_.Name -notin @('agentpulse-launcher.exe', 'agentpulse.exe') -or -not $_.ExecutablePath) { return $false }
+        $processPath = [IO.Path]::GetFullPath($_.ExecutablePath)
+        $processPath.Equals((Join-Path $installDirectory 'agentpulse-launcher.exe'), [StringComparison]::OrdinalIgnoreCase) -or
+            $processPath.Equals((Join-Path $installDirectory 'agentpulse.exe'), [StringComparison]::OrdinalIgnoreCase)
     } |
     Select-Object -First 1
 if ($runningProcess) {

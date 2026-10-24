@@ -19,7 +19,7 @@ type ReceiverSettingsRepository interface {
 }
 
 // ReceiverSettingsService owns the persistent loopback receiver port and
-// reports when a user change requires the backend process to restart.
+// reports when a changed port needs to be applied to the running listener.
 type ReceiverSettingsService struct {
 	repository ReceiverSettingsRepository
 }

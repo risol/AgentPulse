@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../../ui/theme/ap_colors.dart';
+
 class ProcessPage extends StatefulWidget {
   const ProcessPage({
     required this.config,
@@ -12,6 +14,8 @@ class ProcessPage extends StatefulWidget {
     required this.onSave,
     required this.onRefresh,
     required this.onLoadMore,
+    this.configurationOnly = false,
+    this.privacyOnly = false,
     super.key,
   });
 
@@ -25,6 +29,8 @@ class ProcessPage extends StatefulWidget {
   final ValueChanged<Map<String, dynamic>> onSave;
   final VoidCallback onRefresh;
   final VoidCallback onLoadMore;
+  final bool configurationOnly;
+  final bool privacyOnly;
 
   @override
   State<ProcessPage> createState() => _ProcessPageState();
@@ -124,19 +130,38 @@ class _ProcessPageState extends State<ProcessPage> {
     });
   }
 
+  void _savePrivacy() {
+    widget.onSave({
+      'enabled': _enabled,
+      'capture_executable_paths': _captureExecutablePaths,
+      'capture_command_lines': _captureCommandLines,
+      'sample_interval_ms': _sampleInterval,
+      'process_retention_days': _retentionDays,
+      'root_process_names': widget.config['root_process_names'] ?? const [],
+      'category_rules': widget.config['category_rules'] ?? const [],
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     final isEnabled = widget.status['enabled'] == true;
     final state = widget.status['state'] as String? ?? 'disabled';
-    return ListView(
-      padding: const EdgeInsets.fromLTRB(36, 30, 36, 36),
-      children: [
+    final settingsOnly = widget.configurationOnly || widget.privacyOnly;
+    final pageChildren = <Widget>[
+      if (!settingsOnly)
         Row(
           children: [
-            const Expanded(
+            Expanded(
               child: Text(
-                '进程监控',
-                style: TextStyle(fontSize: 28, fontWeight: FontWeight.w700),
+                widget.privacyOnly
+                    ? 'Privacy'
+                    : (widget.configurationOnly
+                          ? 'Process Monitoring'
+                          : 'Processes'),
+                style: const TextStyle(
+                  fontSize: 24,
+                  fontWeight: FontWeight.w600,
+                ),
               ),
             ),
             IconButton(
@@ -146,25 +171,27 @@ class _ProcessPageState extends State<ProcessPage> {
             ),
           ],
         ),
-        const SizedBox(height: 8),
+      if (!settingsOnly) const SizedBox(height: 8),
+      if (!settingsOnly)
         Text(
           '仅采集指定 Codex 根进程及其可见后代进程的资源快照。默认关闭。',
-          style: TextStyle(color: Colors.grey.shade700),
+          style: const TextStyle(color: ApColors.textMuted),
         ),
-        const SizedBox(height: 20),
-        if (widget.error != null) _notice(widget.error!, isError: true),
-        Card(
-          elevation: 0,
-          color: Colors.white,
-          child: Padding(
-            padding: const EdgeInsets.all(20),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text(
-                  '采集设置',
-                  style: TextStyle(fontWeight: FontWeight.w600, fontSize: 17),
-                ),
+      const SizedBox(height: 20),
+      if (widget.error != null) _notice(widget.error!, isError: true),
+      Card(
+        elevation: 0,
+        color: ApColors.surface1,
+        child: Padding(
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                widget.privacyOnly ? '隐私与采集范围' : 'Process monitoring settings',
+                style: TextStyle(fontWeight: FontWeight.w600, fontSize: 17),
+              ),
+              if (!widget.privacyOnly)
                 SwitchListTile(
                   contentPadding: EdgeInsets.zero,
                   title: const Text('启用进程监控'),
@@ -172,11 +199,19 @@ class _ProcessPageState extends State<ProcessPage> {
                   value: _enabled,
                   onChanged: (value) => setState(() => _enabled = value),
                 ),
+              if (widget.privacyOnly) ...[
+                const Text(
+                  '可执行路径和命令行默认不保存。命令行仍可能包含提示词或其他敏感参数，即使常见令牌已自动遮蔽。',
+                  style: TextStyle(color: ApColors.textMuted, fontSize: 12),
+                ),
+                const SizedBox(height: 8),
+              ],
+              if (widget.privacyOnly) ...[
                 SwitchListTile(
                   contentPadding: EdgeInsets.zero,
-                  title: const Text('保存可执行文件路径'),
+                  title: const Text('Capture executable path'),
                   subtitle: const Text(
-                    '默认关闭。开启后只采集所选进程树的路径，并将当前用户目录替换为 %USERPROFILE%。',
+                    '关闭时不保存可执行文件路径；开启时所选进程树的当前用户目录会替换为 %USERPROFILE%。',
                   ),
                   value: _captureExecutablePaths,
                   onChanged: (value) =>
@@ -184,14 +219,22 @@ class _ProcessPageState extends State<ProcessPage> {
                 ),
                 SwitchListTile(
                   contentPadding: EdgeInsets.zero,
-                  title: const Text('保存命令行参数'),
+                  title: const Text('Capture command line'),
                   subtitle: const Text(
-                    '默认关闭。常见密码、令牌和当前用户目录会自动遮蔽；其他参数仍可能含提示词或敏感内容。关闭后，已保存记录会在保留期限到期或清空历史时删除。',
+                    '开启后保存命令行参数。常见密码、令牌和当前用户目录会自动遮蔽；其他参数仍可能包含敏感内容。',
                   ),
                   value: _captureCommandLines,
                   onChanged: (value) =>
                       setState(() => _captureCommandLines = value),
                 ),
+                const SizedBox(height: 12),
+                FilledButton.icon(
+                  onPressed: _savePrivacy,
+                  icon: const Icon(Icons.save_outlined),
+                  label: const Text('Save privacy settings'),
+                ),
+              ],
+              if (!widget.privacyOnly) ...[
                 const SizedBox(height: 10),
                 DropdownButtonFormField<int>(
                   initialValue: _sampleInterval,
@@ -206,7 +249,9 @@ class _ProcessPageState extends State<ProcessPage> {
                     DropdownMenuItem(value: 2000, child: Text('2 秒')),
                   ],
                   onChanged: (value) {
-                    if (value != null) setState(() => _sampleInterval = value);
+                    if (value != null) {
+                      setState(() => _sampleInterval = value);
+                    }
                   },
                 ),
                 const SizedBox(height: 12),
@@ -264,13 +309,15 @@ class _ProcessPageState extends State<ProcessPage> {
                   label: const Text('保存设置'),
                 ),
               ],
-            ),
+            ],
           ),
         ),
+      ),
+      if (!settingsOnly) ...[
         const SizedBox(height: 16),
         Card(
           elevation: 0,
-          color: Colors.white,
+          color: ApColors.surface1,
           child: Padding(
             padding: const EdgeInsets.all(20),
             child: Column(
@@ -293,12 +340,18 @@ class _ProcessPageState extends State<ProcessPage> {
                 const SizedBox(height: 6),
                 Text(
                   '最近采样：${_formatTimestamp(widget.status['last_sampled_at_ns'])} · 无法读取资源信息：${widget.status['incomplete_count'] ?? 0} 个',
-                  style: TextStyle(color: Colors.grey.shade700, fontSize: 12),
+                  style: const TextStyle(
+                    color: ApColors.textMuted,
+                    fontSize: 12,
+                  ),
                 ),
                 const SizedBox(height: 6),
                 Text(
                   '保留 ${widget.config['process_retention_days'] ?? 30} 天 · 最近清理：${_formatTimestamp(widget.status['last_cleanup_at_ns'])} · 清理 ${widget.status['last_cleanup_rows'] ?? 0} 条',
-                  style: TextStyle(color: Colors.grey.shade700, fontSize: 12),
+                  style: const TextStyle(
+                    color: ApColors.textMuted,
+                    fontSize: 12,
+                  ),
                 ),
                 if (widget.status['cleanup_error'] != null) ...[
                   const SizedBox(height: 6),
@@ -307,7 +360,10 @@ class _ProcessPageState extends State<ProcessPage> {
                 const SizedBox(height: 8),
                 Text(
                   '轮询可能漏掉两个采样点之间启动并退出的短命进程。',
-                  style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
+                  style: const TextStyle(
+                    color: ApColors.textMuted,
+                    fontSize: 12,
+                  ),
                 ),
               ],
             ),
@@ -319,7 +375,7 @@ class _ProcessPageState extends State<ProcessPage> {
         else if (widget.processes.isEmpty)
           Card(
             elevation: 0,
-            color: Colors.white,
+            color: ApColors.surface1,
             child: Padding(
               padding: const EdgeInsets.all(20),
               child: Text(isEnabled ? '尚未发现匹配的进程。' : '启用监控并保存后，进程快照会显示在这里。'),
@@ -342,6 +398,19 @@ class _ProcessPageState extends State<ProcessPage> {
             ),
         ],
       ],
+    ];
+    if (settingsOnly) {
+      return Padding(
+        padding: const EdgeInsets.fromLTRB(4, 0, 4, 8),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: pageChildren,
+        ),
+      );
+    }
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(36, 30, 36, 36),
+      children: pageChildren,
     );
   }
 
@@ -353,12 +422,12 @@ class _ProcessPageState extends State<ProcessPage> {
     final category = process['command_category'] as String?;
     return Card(
       elevation: 0,
-      color: Colors.white,
+      color: ApColors.surface1,
       margin: const EdgeInsets.only(bottom: 8),
       child: ListTile(
         leading: Icon(
           ended ? Icons.stop_circle_outlined : Icons.memory_outlined,
-          color: ended ? Colors.blueGrey : const Color(0xff4866e8),
+          color: ended ? ApColors.textMuted : ApColors.accentStrong,
         ),
         title: Text(name),
         subtitle: Column(
@@ -414,7 +483,9 @@ class _ProcessPageState extends State<ProcessPage> {
   Widget _notice(String text, {bool isError = false}) => Container(
     padding: const EdgeInsets.all(12),
     decoration: BoxDecoration(
-      color: isError ? const Color(0xffffeeee) : const Color(0xffeef2ff),
+      color: isError
+          ? ApColors.danger.withValues(alpha: .1)
+          : ApColors.accent.withValues(alpha: .1),
       borderRadius: BorderRadius.circular(8),
     ),
     child: Text(text),

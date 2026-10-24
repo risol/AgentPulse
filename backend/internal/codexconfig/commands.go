@@ -5,7 +5,8 @@ import "github.com/agentpulse/agentpulse/backend/internal/application"
 // Commands adapts the local configuration functions to an explicit
 // application dependency.
 type Commands struct {
-	Endpoint string
+	Endpoint         string
+	EndpointProvider func() string
 }
 
 func (commands Commands) Detect() (application.CodexConfigurationInfo, error) {
@@ -32,6 +33,11 @@ func (commands Commands) Restore(backupName string) (application.CodexConfigurat
 }
 
 func (commands Commands) endpoint() string {
+	if commands.EndpointProvider != nil {
+		if endpoint := commands.EndpointProvider(); endpoint != "" {
+			return endpoint
+		}
+	}
 	if commands.Endpoint == "" {
 		return defaultOTLPEndpoint()
 	}

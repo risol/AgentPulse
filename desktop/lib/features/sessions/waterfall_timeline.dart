@@ -1,11 +1,23 @@
 import 'dart:math' as math;
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+
+import '../../ui/components/ap_components.dart';
+import '../../ui/theme/ap_colors.dart';
 
 class WaterfallTimeline extends StatefulWidget {
-  const WaterfallTimeline({super.key, required this.records});
+  const WaterfallTimeline({
+    super.key,
+    required this.records,
+    this.showDetails = true,
+    this.onSelect,
+  });
 
   final List<Map<String, dynamic>> records;
+  final bool showDetails;
+  final ValueChanged<Map<String, dynamic>>? onSelect;
 
   @override
   State<WaterfallTimeline> createState() => _WaterfallTimelineState();
@@ -13,13 +25,68 @@ class WaterfallTimeline extends StatefulWidget {
 
 class _WaterfallTimelineState extends State<WaterfallTimeline> {
   final ScrollController _verticalController = ScrollController();
+  final ScrollController _axisHorizontalController = ScrollController();
+  final ScrollController _plotHorizontalController = ScrollController();
   double _zoom = 1;
+  double? _hoverX;
+  double? _hoverY;
   int? _selectedIndex;
+  bool _syncingHorizontal = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _axisHorizontalController.addListener(_syncPlotFromAxis);
+    _plotHorizontalController.addListener(_syncAxisFromPlot);
+  }
 
   @override
   void dispose() {
     _verticalController.dispose();
+    _axisHorizontalController
+      ..removeListener(_syncPlotFromAxis)
+      ..dispose();
+    _plotHorizontalController
+      ..removeListener(_syncAxisFromPlot)
+      ..dispose();
     super.dispose();
+  }
+
+  void _syncAxisFromPlot() =>
+      _syncScroll(_plotHorizontalController, _axisHorizontalController);
+
+  void _syncPlotFromAxis() =>
+      _syncScroll(_axisHorizontalController, _plotHorizontalController);
+
+  void _syncScroll(ScrollController source, ScrollController target) {
+    if (_syncingHorizontal || !source.hasClients || !target.hasClients) return;
+    _syncingHorizontal = true;
+    final offset = source.position.pixels.clamp(
+      0.0,
+      target.position.maxScrollExtent,
+    );
+    if ((target.position.pixels - offset).abs() > .5) target.jumpTo(offset);
+    _syncingHorizontal = false;
+  }
+
+  void _onPointerSignal(PointerSignalEvent event) {
+    if (event is! PointerScrollEvent) return;
+    if (HardwareKeyboard.instance.isControlPressed) {
+      setState(
+        () => _zoom = (_zoom + (event.scrollDelta.dy < 0 ? .25 : -.25)).clamp(
+          1,
+          5,
+        ),
+      );
+    } else if (HardwareKeyboard.instance.isShiftPressed &&
+        _plotHorizontalController.hasClients) {
+      final position = _plotHorizontalController.position;
+      final offset = (position.pixels + event.scrollDelta.dy).clamp(
+        0.0,
+        position.maxScrollExtent,
+      );
+      _plotHorizontalController.jumpTo(offset);
+    }
   }
 
   @override
@@ -45,192 +112,325 @@ class _WaterfallTimelineState extends State<WaterfallTimeline> {
 
     return LayoutBuilder(
       builder: (context, constraints) {
-        final plotWidth = math.max(480.0, constraints.maxWidth - 148) * _zoom;
-        return Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Row(
-              children: [
-                const Text('时间线缩放', style: TextStyle(fontSize: 12)),
-                Expanded(
-                  child: Slider(
-                    value: _zoom,
-                    min: 1,
-                    max: 4,
-                    divisions: 6,
-                    label: '${_zoom.toStringAsFixed(1)}×',
-                    onChanged: (value) => setState(() => _zoom = value),
+        final plotWidth = math.max(480.0, constraints.maxWidth - 228) * _zoom;
+        final hoverIndex = _hoverY == null
+            ? null
+            : (_hoverY! ~/ 34).clamp(0, records.length - 1);
+        final selectedRecord = selectedIndex == null
+            ? null
+            : records[selectedIndex];
+        final selectedX = selectedRecord == null
+            ? null
+            : ((_startTime(selectedRecord)!
+                              .difference(windowStart)
+                              .inMicroseconds /
+                          1000) /
+                      windowMS *
+                      plotWidth)
+                  .clamp(0.0, plotWidth)
+                  .toDouble();
+        return Focus(
+          autofocus: true,
+          onKeyEvent: (node, event) {
+            if (event is! KeyDownEvent || records.isEmpty) {
+              return KeyEventResult.ignored;
+            }
+            if (event.logicalKey == LogicalKeyboardKey.arrowDown ||
+                event.logicalKey == LogicalKeyboardKey.arrowUp) {
+              final direction = event.logicalKey == LogicalKeyboardKey.arrowDown
+                  ? 1
+                  : -1;
+              final current = _selectedIndex ?? -1;
+              final next = (current + direction).clamp(0, records.length - 1);
+              setState(() => _selectedIndex = next);
+              widget.onSelect?.call(records[next]);
+              return KeyEventResult.handled;
+            }
+            if (event.logicalKey == LogicalKeyboardKey.equal ||
+                event.logicalKey == LogicalKeyboardKey.add) {
+              setState(() => _zoom = (_zoom + .25).clamp(1, 5));
+              return KeyEventResult.handled;
+            }
+            if (event.logicalKey == LogicalKeyboardKey.minus) {
+              setState(() => _zoom = (_zoom - .25).clamp(1, 5));
+              return KeyEventResult.handled;
+            }
+            if (event.logicalKey == LogicalKeyboardKey.keyF) {
+              setState(() => _zoom = 1);
+              return KeyEventResult.handled;
+            }
+            return KeyEventResult.ignored;
+          },
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Row(
+                children: [
+                  const Text(
+                    'Timeline',
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: ApColors.textSecondary,
+                    ),
                   ),
-                ),
-                Text('${records.length} 条'),
-              ],
-            ),
-            SizedBox(
-              height: math.max(120.0, constraints.maxHeight - 208),
-              child: Scrollbar(
-                controller: _verticalController,
-                child: SingleChildScrollView(
-                  controller: _verticalController,
-                  child: SingleChildScrollView(
-                    scrollDirection: Axis.horizontal,
-                    child: SizedBox(
-                      width: 140 + plotWidth,
-                      child: Column(
+                  IconButton(
+                    onPressed: () =>
+                        setState(() => _zoom = (_zoom - .25).clamp(1, 5)),
+                    tooltip: 'Zoom out',
+                    icon: const Icon(Icons.remove, size: 16),
+                  ),
+                  SizedBox(
+                    width: 90,
+                    child: Slider(
+                      value: _zoom,
+                      min: 1,
+                      max: 5,
+                      divisions: 16,
+                      label: '${_zoom.toStringAsFixed(1)}×',
+                      onChanged: (value) => setState(() => _zoom = value),
+                    ),
+                  ),
+                  IconButton(
+                    onPressed: () =>
+                        setState(() => _zoom = (_zoom + .25).clamp(1, 5)),
+                    tooltip: 'Zoom in',
+                    icon: const Icon(Icons.add, size: 16),
+                  ),
+                  TextButton(
+                    onPressed: () => setState(() => _zoom = 1),
+                    child: const Text('Fit to Run'),
+                  ),
+                  const Spacer(),
+                  Text(
+                    '${records.length} spans',
+                    style: const TextStyle(
+                      fontSize: 11,
+                      color: ApColors.textMuted,
+                    ),
+                  ),
+                ],
+              ),
+              Expanded(
+                child: Column(
+                  children: [
+                    SizedBox(
+                      height: 28,
+                      child: Row(
                         children: [
-                          _timeAxis(windowStart, windowEnd, plotWidth),
-                          for (var index = 0; index < records.length; index++)
-                            _timelineRow(
-                              records[index],
-                              index,
-                              windowStart,
-                              windowMS,
-                              plotWidth,
-                              selectedIndex == index,
+                          const SizedBox(width: 220),
+                          Expanded(
+                            child: Listener(
+                              onPointerSignal: _onPointerSignal,
+                              child: SingleChildScrollView(
+                                controller: _axisHorizontalController,
+                                scrollDirection: Axis.horizontal,
+                                child: _timeAxis(
+                                  windowStart,
+                                  windowEnd,
+                                  plotWidth,
+                                  selectedX,
+                                  _hoverX,
+                                ),
+                              ),
                             ),
+                          ),
                         ],
                       ),
                     ),
-                  ),
-                ),
-              ),
-            ),
-            const SizedBox(height: 8),
-            _details(selectedIndex == null ? null : records[selectedIndex]),
-          ],
-        );
-      },
-    );
-  }
-
-  Widget _timeAxis(DateTime start, DateTime end, double width) => Row(
-    children: [
-      const SizedBox(width: 140),
-      SizedBox(
-        width: width,
-        height: 26,
-        child: Stack(
-          children: [
-            for (var index = 0; index <= 4; index++)
-              Positioned(
-                left: width * index / 4,
-                top: 0,
-                bottom: 0,
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      _timeLabel(
-                        start.add(end.difference(start) * (index / 4)),
-                      ),
-                      style: const TextStyle(
-                        fontSize: 10,
-                        color: Colors.blueGrey,
-                      ),
-                    ),
                     Expanded(
-                      child: Container(
-                        width: 1,
-                        color: const Color(0xffe8eaf0),
+                      child: Scrollbar(
+                        controller: _verticalController,
+                        child: SingleChildScrollView(
+                          controller: _verticalController,
+                          child: Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              SizedBox(
+                                width: 220,
+                                child: Column(
+                                  children: [
+                                    for (
+                                      var index = 0;
+                                      index < records.length;
+                                      index++
+                                    )
+                                      _timelineLabel(
+                                        records,
+                                        index,
+                                        selectedIndex == index,
+                                      ),
+                                  ],
+                                ),
+                              ),
+                              Expanded(
+                                child: Listener(
+                                  onPointerSignal: _onPointerSignal,
+                                  child: SingleChildScrollView(
+                                    controller: _plotHorizontalController,
+                                    scrollDirection: Axis.horizontal,
+                                    child: MouseRegion(
+                                      onHover: (event) => setState(() {
+                                        _hoverX = event.localPosition.dx;
+                                        _hoverY = event.localPosition.dy;
+                                      }),
+                                      onExit: (_) => setState(() {
+                                        _hoverX = null;
+                                        _hoverY = null;
+                                      }),
+                                      child: GestureDetector(
+                                        behavior: HitTestBehavior.opaque,
+                                        onTapDown: (event) {
+                                          final index =
+                                              (event.localPosition.dy ~/ 34)
+                                                  .clamp(0, records.length - 1);
+                                          setState(
+                                            () => _selectedIndex = index,
+                                          );
+                                          widget.onSelect?.call(records[index]);
+                                        },
+                                        child: Tooltip(
+                                          message: hoverIndex == null
+                                              ? 'Select a timeline row to inspect its details.'
+                                              : _tooltip(records[hoverIndex]),
+                                          child: CustomPaint(
+                                            size: Size(
+                                              plotWidth,
+                                              records.length * 34.0,
+                                            ),
+                                            painter: _TimelineRowsPainter(
+                                              records: records,
+                                              windowStart: windowStart,
+                                              windowMS: windowMS,
+                                              rowHeight: 34,
+                                              gridColor: ApColors.borderMuted,
+                                              selectedIndex: selectedIndex,
+                                              hoveredIndex: hoverIndex,
+                                              selectedX: selectedX,
+                                              hoverX: _hoverX,
+                                              kindColor: _kindColor,
+                                              shortLabel: _shortKind,
+                                              startTime: (record) =>
+                                                  _startTime(record)!,
+                                              endTime: _endTime,
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
                       ),
                     ),
                   ],
                 ),
               ),
-          ],
-        ),
-      ),
-    ],
-  );
-
-  Widget _timelineRow(
-    Map<String, dynamic> record,
-    int index,
-    DateTime windowStart,
-    double windowMS,
-    double plotWidth,
-    bool selected,
-  ) {
-    final start = _startTime(record)!;
-    final end = _endTime(record);
-    final startMS = start.difference(windowStart).inMicroseconds / 1000;
-    final durationMS = math.max(
-      120.0,
-      end.difference(start).inMicroseconds / 1000,
+              if (widget.showDetails) ...[
+                const SizedBox(height: 8),
+                _details(selectedIndex == null ? null : records[selectedIndex]),
+              ],
+            ],
+          ),
+        );
+      },
     );
-    final left = (startMS / windowMS * plotWidth).clamp(0.0, plotWidth);
-    final barWidth = math
-        .max(5.0, durationMS / windowMS * plotWidth)
-        .clamp(5.0, plotWidth - left);
-    final color = _kindColor(record);
-    return InkWell(
-      onTap: () => setState(() => _selectedIndex = index),
-      child: Container(
-        height: 34,
-        color: selected ? const Color(0xffeef2ff) : Colors.transparent,
-        child: Row(
-          children: [
-            SizedBox(
-              width: 140,
-              child: Padding(
-                padding: const EdgeInsets.only(right: 8),
-                child: Text(
-                  _rowLabel(record),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    fontSize: 11,
-                    fontWeight: selected ? FontWeight.w600 : FontWeight.normal,
+  }
+
+  Widget _timeAxis(
+    DateTime start,
+    DateTime end,
+    double width,
+    double? selectedX,
+    double? hoverX,
+  ) => SizedBox(
+    width: width,
+    height: 28,
+    child: Stack(
+      children: [
+        for (var index = 0; index <= 4; index++)
+          Positioned(
+            left: width * index / 4,
+            top: 0,
+            bottom: 0,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  _timeLabel(start.add(end.difference(start) * (index / 4))),
+                  style: const TextStyle(
+                    fontSize: 10,
+                    color: ApColors.textMuted,
                   ),
                 ),
-              ),
+                Expanded(
+                  child: Container(width: 1, color: ApColors.borderMuted),
+                ),
+              ],
             ),
-            SizedBox(
-              width: plotWidth,
-              height: 34,
-              child: Stack(
-                children: [
-                  Positioned.fill(
-                    child: CustomPaint(
-                      painter: _TimelineGridPainter(
-                        color: const Color(0xffedf0f5),
-                      ),
-                    ),
-                  ),
-                  Positioned(
-                    left: left.toDouble(),
-                    top: 7,
-                    width: barWidth.toDouble(),
-                    height: 20,
-                    child: Tooltip(
-                      message: _tooltip(record),
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 4),
-                        alignment: Alignment.centerLeft,
-                        decoration: BoxDecoration(
-                          color: color,
-                          borderRadius: BorderRadius.circular(4),
-                          border: selected
-                              ? Border.all(
-                                  color: const Color(0xff243b93),
-                                  width: 1.5,
-                                )
-                              : null,
-                        ),
-                        child: barWidth >= 72
-                            ? Text(
-                                _shortKind(record),
-                                maxLines: 1,
-                                overflow: TextOverflow.clip,
-                                style: const TextStyle(
-                                  color: Colors.white,
-                                  fontSize: 10,
-                                ),
-                              )
-                            : null,
-                      ),
-                    ),
-                  ),
-                ],
+          ),
+        if (selectedX != null)
+          Positioned(
+            left: selectedX,
+            top: 0,
+            bottom: 0,
+            child: Container(
+              width: 1,
+              color: ApColors.accentStrong.withValues(alpha: .6),
+            ),
+          ),
+        if (hoverX != null)
+          Positioned(
+            left: hoverX,
+            top: 0,
+            bottom: 0,
+            child: Container(
+              width: 1,
+              color: ApColors.textSecondary.withValues(alpha: .45),
+            ),
+          ),
+      ],
+    ),
+  );
+
+  Widget _timelineLabel(
+    List<Map<String, dynamic>> records,
+    int index,
+    bool selected,
+  ) {
+    final record = records[index];
+    final level = _rowLevel(record, records);
+    final color = _kindColor(record);
+    return InkWell(
+      onTap: () {
+        setState(() => _selectedIndex = index);
+        widget.onSelect?.call(record);
+      },
+      child: Container(
+        height: 34,
+        padding: EdgeInsets.only(left: 10 + level * 13, right: 8),
+        decoration: BoxDecoration(
+          color: selected ? ApColors.accent.withValues(alpha: .1) : null,
+          border: const Border(bottom: BorderSide(color: ApColors.borderMuted)),
+        ),
+        child: Row(
+          children: [
+            Icon(_kindIcon(record), size: 13, color: color),
+            const SizedBox(width: 6),
+            Expanded(
+              child: Text(
+                _rowLabel(record),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: 11,
+                  color: selected
+                      ? ApColors.textPrimary
+                      : ApColors.textSecondary,
+                  fontWeight: selected ? FontWeight.w600 : FontWeight.normal,
+                ),
               ),
             ),
           ],
@@ -241,11 +441,12 @@ class _WaterfallTimelineState extends State<WaterfallTimeline> {
 
   Widget _details(Map<String, dynamic>? record) {
     if (record == null) {
-      return const Card(
-        elevation: 0,
+      return const ApPanel(
         child: Padding(
-          padding: EdgeInsets.all(14),
-          child: Text('选择一条时间线记录查看字段、数据质量和关联方式。'),
+          padding: EdgeInsets.all(4),
+          child: Text(
+            'Select a timeline record to inspect its quality and correlation.',
+          ),
         ),
       );
     }
@@ -266,7 +467,7 @@ class _WaterfallTimelineState extends State<WaterfallTimeline> {
       if (record['retry_index'] is num) '重试序号：${record['retry_index']}',
       if (record['process_pid'] is num)
         'PID：${record['process_pid']} · PPID：${record['parent_process_pid'] ?? '未知'}',
-      '数据质量：${record['data_quality'] == 'complete' ? '完整' : '部分'}',
+      '数据质量：${record['data_quality'] ?? '不可用'}',
       if (record['correlation_method'] is String &&
           (record['correlation_method'] as String).isNotEmpty)
         '关联：${record['correlation_method']}',
@@ -274,19 +475,15 @@ class _WaterfallTimelineState extends State<WaterfallTimeline> {
           (record['span_id'] as String).isNotEmpty)
         'Span：${record['span_id']}',
     ];
-    return Card(
-      elevation: 0,
-      color: const Color(0xfff7f8fb),
-      child: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Wrap(
-          spacing: 14,
-          runSpacing: 8,
-          children: [
-            for (final value in details)
-              Text(value, style: const TextStyle(fontSize: 12)),
-          ],
-        ),
+    return ApPanel(
+      padding: const EdgeInsets.all(12),
+      child: Wrap(
+        spacing: 14,
+        runSpacing: 8,
+        children: [
+          for (final value in details)
+            Text(value, style: const TextStyle(fontSize: 12)),
+        ],
       ),
     );
   }
@@ -311,6 +508,33 @@ class _WaterfallTimelineState extends State<WaterfallTimeline> {
     return '${record['signal'] ?? '遥测'} · ${record['span_role'] ?? '事件'}';
   }
 
+  int _rowLevel(
+    Map<String, dynamic> record,
+    List<Map<String, dynamic>> records,
+  ) {
+    final parentId = record['parent_span_id'] ?? record['parent_id'];
+    if (parentId == null) return 0;
+    return records.any((candidate) => candidate['span_id'] == parentId) ? 1 : 0;
+  }
+
+  IconData _kindIcon(Map<String, dynamic> record) {
+    final kind = '${record['kind'] ?? ''}';
+    final outcome = '${record['outcome'] ?? ''}'.toLowerCase();
+    if (outcome.contains('fail') || outcome.contains('error')) {
+      return Icons.error_outline;
+    }
+    if (kind == 'model_request' || kind == 'model_event') {
+      return Icons.auto_awesome_outlined;
+    }
+    if (kind == 'tool_call') {
+      return Icons.build_outlined;
+    }
+    if (kind == 'command') {
+      return Icons.terminal;
+    }
+    return Icons.circle_outlined;
+  }
+
   String _shortKind(Map<String, dynamic> record) {
     if (record['kind'] == 'model_request' || record['kind'] == 'model_event') {
       return '模型';
@@ -327,11 +551,11 @@ class _WaterfallTimelineState extends State<WaterfallTimeline> {
 
   Color _kindColor(Map<String, dynamic> record) {
     if (record['kind'] == 'model_request' || record['kind'] == 'model_event') {
-      return const Color(0xff4866e8);
+      return ApColors.model;
     }
-    if (record['kind'] == 'tool_call') return const Color(0xff16855b);
-    if (record['kind'] == 'command') return const Color(0xffc17912);
-    return const Color(0xff758198);
+    if (record['kind'] == 'tool_call') return ApColors.tool;
+    if (record['kind'] == 'command') return ApColors.command;
+    return ApColors.inferred;
   }
 
   String _timeLabel(DateTime value) {
@@ -340,23 +564,155 @@ class _WaterfallTimelineState extends State<WaterfallTimeline> {
   }
 }
 
-class _TimelineGridPainter extends CustomPainter {
-  const _TimelineGridPainter({required this.color});
+class _TimelineRowsPainter extends CustomPainter {
+  const _TimelineRowsPainter({
+    required this.records,
+    required this.windowStart,
+    required this.windowMS,
+    required this.rowHeight,
+    required this.gridColor,
+    required this.selectedIndex,
+    required this.hoveredIndex,
+    required this.selectedX,
+    required this.hoverX,
+    required this.kindColor,
+    required this.shortLabel,
+    required this.startTime,
+    required this.endTime,
+  });
 
-  final Color color;
+  final List<Map<String, dynamic>> records;
+  final DateTime windowStart;
+  final double windowMS;
+  final double rowHeight;
+  final Color gridColor;
+  final int? selectedIndex;
+  final int? hoveredIndex;
+  final double? selectedX;
+  final double? hoverX;
+  final Color Function(Map<String, dynamic>) kindColor;
+  final String Function(Map<String, dynamic>) shortLabel;
+  final DateTime Function(Map<String, dynamic>) startTime;
+  final DateTime Function(Map<String, dynamic>) endTime;
 
   @override
   void paint(Canvas canvas, Size size) {
-    final paint = Paint()
-      ..color = color
+    final height = records.length * rowHeight;
+    final gridPaint = Paint()
+      ..color = gridColor
       ..strokeWidth = 1;
+    final dividerPaint = Paint()
+      ..color = gridColor.withValues(alpha: .72)
+      ..strokeWidth = 1;
+
+    if (hoveredIndex != null && hoveredIndex != selectedIndex) {
+      canvas.drawRect(
+        Rect.fromLTWH(0, hoveredIndex! * rowHeight, size.width, rowHeight),
+        Paint()..color = ApColors.surface2.withValues(alpha: .55),
+      );
+    }
+    if (selectedIndex != null) {
+      canvas.drawRect(
+        Rect.fromLTWH(0, selectedIndex! * rowHeight, size.width, rowHeight),
+        Paint()..color = ApColors.accent.withValues(alpha: .1),
+      );
+    }
+
     for (var index = 0; index <= 4; index++) {
       final x = size.width * index / 4;
-      canvas.drawLine(Offset(x, 0), Offset(x, size.height), paint);
+      canvas.drawLine(Offset(x, 0), Offset(x, height), gridPaint);
+    }
+    for (var index = 1; index <= records.length; index++) {
+      final y = index * rowHeight;
+      canvas.drawLine(Offset(0, y), Offset(size.width, y), dividerPaint);
+    }
+
+    for (var index = 0; index < records.length; index++) {
+      final record = records[index];
+      final start = startTime(record);
+      final end = endTime(record);
+      final startMS = start.difference(windowStart).inMicroseconds / 1000;
+      final durationMS = math.max(
+        120.0,
+        end.difference(start).inMicroseconds / 1000,
+      );
+      final left = (startMS / windowMS * size.width)
+          .clamp(0.0, size.width - 5)
+          .toDouble();
+      final barWidth = math
+          .max(5.0, durationMS / windowMS * size.width)
+          .clamp(5.0, size.width - left)
+          .toDouble();
+      final top = index * rowHeight + 7;
+      final rect = Rect.fromLTWH(left, top, barWidth, 20);
+      final radius = RRect.fromRectAndRadius(rect, const Radius.circular(4));
+      final quality = '${record['data_quality'] ?? ''}'.toLowerCase();
+      final inferred =
+          quality == 'inferred' ||
+          '${record['correlation_method'] ?? ''}'.contains('inferred');
+      final outcome = '${record['outcome'] ?? ''}'.toLowerCase();
+      final failed = outcome.contains('fail') || outcome.contains('error');
+      final partial = quality == 'partial';
+      canvas.drawRRect(
+        radius,
+        Paint()
+          ..color = kindColor(record).withValues(alpha: inferred ? .55 : 1),
+      );
+      if (failed || partial || selectedIndex == index) {
+        canvas.drawRRect(
+          radius,
+          Paint()
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = selectedIndex == index ? 1.5 : 1
+            ..color = failed
+                ? ApColors.danger
+                : partial
+                ? ApColors.warning
+                : ApColors.accentStrong,
+        );
+      }
+      if (barWidth >= 72) {
+        final text = TextPainter(
+          text: TextSpan(
+            text: shortLabel(record),
+            style: const TextStyle(color: ApColors.textPrimary, fontSize: 10),
+          ),
+          maxLines: 1,
+          ellipsis: '…',
+          textDirection: TextDirection.ltr,
+        )..layout(maxWidth: math.max(0, barWidth - 8));
+        text.paint(canvas, Offset(left + 4, top + (20 - text.height) / 2));
+      }
+    }
+
+    if (selectedX != null) {
+      canvas.drawLine(
+        Offset(selectedX!, 0),
+        Offset(selectedX!, height),
+        Paint()
+          ..color = ApColors.accentStrong.withValues(alpha: .6)
+          ..strokeWidth = 1.5,
+      );
+    }
+    if (hoverX != null) {
+      canvas.drawLine(
+        Offset(hoverX!, 0),
+        Offset(hoverX!, height),
+        Paint()
+          ..color = ApColors.textSecondary.withValues(alpha: .45)
+          ..strokeWidth = 1,
+      );
     }
   }
 
   @override
-  bool shouldRepaint(covariant _TimelineGridPainter oldDelegate) =>
-      oldDelegate.color != color;
+  bool shouldRepaint(covariant _TimelineRowsPainter oldDelegate) =>
+      oldDelegate.records != records ||
+      oldDelegate.windowStart != windowStart ||
+      oldDelegate.windowMS != windowMS ||
+      oldDelegate.selectedIndex != selectedIndex ||
+      oldDelegate.hoveredIndex != hoveredIndex ||
+      oldDelegate.selectedX != selectedX ||
+      oldDelegate.hoverX != hoverX ||
+      oldDelegate.gridColor != gridColor;
 }

@@ -58,17 +58,17 @@ class DashboardRefreshCoordinator {
       final page = currentPage();
       _runLoadData(
         includeSessions: false,
-        includeProcesses: page == 1,
+        includeProcesses: page == 0 || page == 3,
         includeTools: page == 2,
         includeTrends: false,
       );
-      if (page == 3) _runLoadRetention();
+      if (page == 4 || page == 5) _runLoadRetention();
     });
     _sessionTimer = Timer.periodic(sessionRefreshInterval, (_) {
       final page = currentPage();
       _runLoadData(
         includeSessions: true,
-        includeProcesses: page == 1,
+        includeProcesses: page == 0 || page == 3,
         includeTools: page == 2,
         includeTrends: page == 0,
       );
@@ -123,11 +123,11 @@ class DashboardRefreshCoordinator {
       final page = currentPage();
       _runLoadData(
         includeSessions: true,
-        includeProcesses: page == 1,
+        includeProcesses: page == 0 || page == 3,
         includeTools: page == 2,
         includeTrends: page == 0,
       );
-      if (page == 3) _runLoadRetention();
+      if (page == 4 || page == 5) _runLoadRetention();
     });
   }
 

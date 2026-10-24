@@ -92,12 +92,12 @@ void main() {
       expect(dashboardLoads, 1);
       expect(loadOptions.single, {
         'sessions': true,
-        'processes': false,
+        'processes': true,
         'tools': false,
         'trends': true,
       });
 
-      currentPage = 3;
+      currentPage = 5;
       eventController.add('event: telemetry');
       await Future<void>.delayed(const Duration(milliseconds: 80));
 

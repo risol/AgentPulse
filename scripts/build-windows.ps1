@@ -27,6 +27,9 @@ try {
     $env:GOOS = 'windows'
     $env:GOARCH = 'amd64'
     go build -trimpath -ldflags "-X main.version=$applicationVersion" -o (Join-Path $outputDir 'agentpulse-backend.exe') ./cmd/agentpulse
+    if ($LASTEXITCODE -ne 0) { throw 'Failed to build the Go backend.' }
+    go build -trimpath -ldflags "-H=windowsgui -X main.version=$applicationVersion" -o (Join-Path $outputDir 'agentpulse-launcher.exe') ./cmd/agentpulse
+    if ($LASTEXITCODE -ne 0) { throw 'Failed to build the Go desktop launcher.' }
 }
 finally {
     $env:CGO_ENABLED = $previousCgoEnabled
@@ -57,6 +60,7 @@ if ($BuildDesktop) {
 		if (-not (Test-Path -LiteralPath (Join-Path $outputDir 'data\app.so')) -or
 		    -not (Test-Path -LiteralPath (Join-Path $outputDir 'flutter_windows.dll')) -or
 		    -not (Test-Path -LiteralPath (Join-Path $outputDir 'agentpulse-backend.exe')) -or
+		    -not (Test-Path -LiteralPath (Join-Path $outputDir 'agentpulse-launcher.exe')) -or
 		    -not (Test-Path -LiteralPath (Join-Path $outputDir 'Install-AgentPulse.ps1')) -or
 		    -not (Test-Path -LiteralPath (Join-Path $outputDir 'Uninstall-AgentPulse.ps1'))) {
 			throw 'Windows distribution is missing required Flutter or backend runtime files.'
@@ -75,12 +79,14 @@ if ($BuildDesktop) {
 			Copy-Item -LiteralPath $_.FullName -Destination $stageDirectory -Recurse -Force
 		}
 		Copy-Item -LiteralPath (Join-Path $outputDir 'agentpulse-backend.exe') -Destination $stageDirectory -Force
+		Copy-Item -LiteralPath (Join-Path $outputDir 'agentpulse-launcher.exe') -Destination $stageDirectory -Force
 		Copy-Item -LiteralPath (Join-Path $repoRoot 'scripts\Install-AgentPulse.ps1') -Destination $stageDirectory -Force
 		Copy-Item -LiteralPath (Join-Path $repoRoot 'scripts\Uninstall-AgentPulse.ps1') -Destination $stageDirectory -Force
 		Copy-Item -LiteralPath (Join-Path $repoRoot 'scripts\windows-package-readme.txt') -Destination (Join-Path $stageDirectory 'README.txt') -Force
 		if (-not (Test-Path -LiteralPath (Join-Path $stageDirectory 'data\app.so')) -or
 		    -not (Test-Path -LiteralPath (Join-Path $stageDirectory 'flutter_windows.dll')) -or
-		    -not (Test-Path -LiteralPath (Join-Path $stageDirectory 'agentpulse-backend.exe'))) {
+		    -not (Test-Path -LiteralPath (Join-Path $stageDirectory 'agentpulse-backend.exe')) -or
+		    -not (Test-Path -LiteralPath (Join-Path $stageDirectory 'agentpulse-launcher.exe'))) {
 			throw 'The staged offline bundle is missing runtime files.'
 		}
 		$archivePath = Join-Path $outputDir 'AgentPulse-Windows-x64.zip'

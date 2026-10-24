@@ -69,9 +69,9 @@ function Stop-TestBackend($Backend) {
     }
 }
 
-function Get-AgentPulseChild([int]$ParentProcessId, [string]$BackendPath) {
+function Get-AgentPulseDesktopChild([int]$ParentProcessId, [string]$DesktopPath) {
     return Get-CimInstance Win32_Process -Filter "ParentProcessId = $ParentProcessId" |
-        Where-Object { $_.Name -eq 'agentpulse-backend.exe' -and $_.ExecutablePath -ieq $BackendPath } |
+        Where-Object { $_.Name -eq 'agentpulse.exe' -and $_.ExecutablePath -ieq $DesktopPath } |
         Select-Object -First 1
 }
 
@@ -89,20 +89,20 @@ function Test-LoopbackPort([int]$Port) {
     }
 }
 
-function Wait-DesktopBackend([Diagnostics.Process]$DesktopProcess, [string]$BackendPath, [int]$Port) {
+function Wait-DesktopChild([Diagnostics.Process]$LauncherProcess, [string]$DesktopPath, [int]$Port) {
     $deadline = [DateTime]::UtcNow.AddSeconds(25)
     do {
-        $DesktopProcess.Refresh()
-        if ($DesktopProcess.HasExited) { throw "Desktop exited during startup with code $($DesktopProcess.ExitCode)." }
-        $child = Get-AgentPulseChild $DesktopProcess.Id $BackendPath
+        $LauncherProcess.Refresh()
+        if ($LauncherProcess.HasExited) { throw "Go launcher exited during startup with code $($LauncherProcess.ExitCode)." }
+        $child = Get-AgentPulseDesktopChild $LauncherProcess.Id $DesktopPath
         if ($child -and (Test-LoopbackPort $Port)) {
-            $backendProcess = [Diagnostics.Process]::GetProcessById([int]$child.ProcessId)
-            $trackedProcesses.Add($backendProcess)
-            return $backendProcess
+            $desktopProcess = [Diagnostics.Process]::GetProcessById([int]$child.ProcessId)
+            $trackedProcesses.Add($desktopProcess)
+            return $desktopProcess
         }
         Start-Sleep -Milliseconds 250
     } while ([DateTime]::UtcNow -lt $deadline)
-    throw "Packaged desktop did not start its receiver on 127.0.0.1:$Port."
+    throw "Go launcher did not start the desktop UI and receiver on 127.0.0.1:$Port."
 }
 
 try {
@@ -118,8 +118,8 @@ try {
     $installDirectory = Join-Path $env:LOCALAPPDATA 'Programs\AgentPulse'
     $userDataDirectory = Join-Path $env:APPDATA 'AgentPulse'
     & $installer -NoShortcut
-    if (-not (Test-Path -LiteralPath (Join-Path $installDirectory 'agentpulse.exe') -PathType Leaf)) {
-        throw 'Install did not place the desktop application.'
+    if (-not (Test-Path -LiteralPath (Join-Path $installDirectory 'agentpulse-launcher.exe') -PathType Leaf)) {
+        throw 'Install did not place the Go desktop launcher.'
     }
 
     # Seed a non-default OTLP port through the authenticated settings API in a clean profile.
@@ -147,31 +147,32 @@ try {
     }
     Stop-TestBackend $customBackend
 
-    # Launch the installed UI with only the isolated profile and a disconnected proxy.
-    # Localhost remains exempt so the UI can communicate with its child receiver.
+    # Launch the installed Go supervisor with only the isolated profile and a disconnected proxy.
+    # Localhost remains exempt so Flutter can connect to the receiver it supervises.
     $env:HTTP_PROXY = 'http://127.0.0.1:9'
     $env:HTTPS_PROXY = 'http://127.0.0.1:9'
     $env:NO_PROXY = '127.0.0.1,localhost'
     $desktopExecutable = Join-Path $installDirectory 'agentpulse.exe'
-    $desktop = Start-Process -FilePath $desktopExecutable -PassThru -WindowStyle Hidden
+    $launcherExecutable = Join-Path $installDirectory 'agentpulse-launcher.exe'
+    $desktop = Start-Process -FilePath $launcherExecutable -ArgumentList '--launch-desktop' -PassThru -WindowStyle Hidden
     $trackedProcesses.Add($desktop)
-    $desktopBackend = Wait-DesktopBackend $desktop $backendExecutable $customPort
-    $desktop.Kill()
-    if (-not $desktop.WaitForExit(10000)) { throw 'Desktop process did not terminate after forced close.' }
-    if (-not $desktopBackend.WaitForExit(15000)) {
-        throw 'Backend did not exit after forced desktop termination.'
+    $desktopUI = Wait-DesktopChild $desktop $desktopExecutable $customPort
+    $desktopUI.Kill()
+    if (-not $desktopUI.WaitForExit(10000)) { throw 'Desktop UI did not terminate after forced close.' }
+    if (-not $desktop.WaitForExit(15000)) {
+        throw 'Go launcher did not stop after the desktop UI closed.'
     }
     if (Test-LoopbackPort $customPort) {
         throw 'Custom receiver port remained open after forced desktop termination.'
     }
 
-    $restartedDesktop = Start-Process -FilePath $desktopExecutable -PassThru -WindowStyle Hidden
+    $restartedDesktop = Start-Process -FilePath $launcherExecutable -ArgumentList '--launch-desktop' -PassThru -WindowStyle Hidden
     $trackedProcesses.Add($restartedDesktop)
-    $restartedBackend = Wait-DesktopBackend $restartedDesktop $backendExecutable $customPort
-    $restartedDesktop.Kill()
-    if (-not $restartedDesktop.WaitForExit(10000)) { throw 'Recovered desktop process did not terminate.' }
-    if (-not $restartedBackend.WaitForExit(15000)) {
-        throw 'Recovered backend did not exit after desktop termination.'
+    $restartedUI = Wait-DesktopChild $restartedDesktop $desktopExecutable $customPort
+    $restartedUI.Kill()
+    if (-not $restartedUI.WaitForExit(10000)) { throw 'Recovered desktop UI did not terminate.' }
+    if (-not $restartedDesktop.WaitForExit(15000)) {
+        throw 'Recovered Go launcher did not stop after the desktop UI closed.'
     }
     if (Test-LoopbackPort $customPort) {
         throw 'Custom receiver port remained open after recovery smoke cleanup.'

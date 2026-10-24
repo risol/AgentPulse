@@ -28,7 +28,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
 
   FlutterWindow window(project);
   Win32Window::Point origin(10, 10);
-  Win32Window::Size size(1280, 720);
+  Win32Window::Size size(1440, 900);
   const POINT monitor_point = {0, 0};
   HMONITOR monitor = MonitorFromPoint(monitor_point, MONITOR_DEFAULTTOPRIMARY);
   MONITORINFO monitor_info{};
@@ -40,18 +40,14 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
         (monitor_info.rcWork.right - monitor_info.rcWork.left) / scale_factor);
     const int work_height = static_cast<int>(
         (monitor_info.rcWork.bottom - monitor_info.rcWork.top) / scale_factor);
-    size.width = std::min(
-        size.width,
-        static_cast<unsigned int>(std::max(320, work_width - 20)));
-    size.height = std::min(
-        size.height,
-        static_cast<unsigned int>(std::max(320, work_height - 20)));
-    origin.x = static_cast<unsigned int>(
-        std::max(0, static_cast<int>(monitor_info.rcWork.left / scale_factor)) +
-        10);
-    origin.y = static_cast<unsigned int>(
-        std::max(0, static_cast<int>(monitor_info.rcWork.top / scale_factor)) +
-        10);
+    size.width = std::min(size.width,
+        static_cast<unsigned int>(std::max(1100, work_width - 20)));
+    size.height = std::min(size.height,
+        static_cast<unsigned int>(std::max(720, work_height - 20)));
+    const int work_left = static_cast<int>(monitor_info.rcWork.left / scale_factor);
+    const int work_top = static_cast<int>(monitor_info.rcWork.top / scale_factor);
+    origin.x = static_cast<unsigned int>(work_left + std::max(0, (work_width - static_cast<int>(size.width)) / 2));
+    origin.y = static_cast<unsigned int>(work_top + std::max(0, (work_height - static_cast<int>(size.height)) / 2));
   }
   if (!window.Create(L"agentpulse", origin, size)) {
     return EXIT_FAILURE;
